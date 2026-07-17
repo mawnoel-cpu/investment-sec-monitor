@@ -6,8 +6,9 @@ import json
 import logging
 import os
 import time
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Iterable
 
 import gspread
@@ -112,7 +113,7 @@ class SecClient:
         )
         self.last_request = 0.0
 
-    def get_json(self, url: str) -> dict[str, Any]:
+    def _get(self, url: str) -> requests.Response:
         # Conservative: at most about two requests per second.
         elapsed = time.monotonic() - self.last_request
         if elapsed < 0.55:
@@ -121,7 +122,13 @@ class SecClient:
         response = self.session.get(url, timeout=45)
         self.last_request = time.monotonic()
         response.raise_for_status()
-        return response.json()
+        return response
+
+    def get_json(self, url: str) -> dict[str, Any]:
+        return self._get(url).json()
+
+    def get_text(self, url: str) -> str:
+        return self._get(url).text
 
 
 def google_client() -> gspread.Client:
@@ -324,6 +331,225 @@ def select_fact(
     )
 
 
+
+def local_name(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1]
+
+
+def parse_iso_date(value: str | None) -> date | None:
+    if not value:
+        return None
+    try:
+        return date.fromisoformat(value[:10])
+    except ValueError:
+        return None
+
+
+def latest_financial_filing(submissions: dict[str, Any]) -> dict[str, str] | None:
+    recent = submissions.get("filings", {}).get("recent", {})
+    forms = recent.get("form", [])
+
+    for index, form in enumerate(forms):
+        if form not in {"10-Q", "10-K"}:
+            continue
+        return {
+            "form": form,
+            "filing_date": recent.get("filingDate", [""] * len(forms))[index],
+            "report_date": recent.get("reportDate", [""] * len(forms))[index],
+            "accession": recent.get("accessionNumber", [""] * len(forms))[index],
+            "primary_document": recent.get("primaryDocument", [""] * len(forms))[index],
+        }
+    return None
+
+
+def numeric_xbrl_value(element: ET.Element) -> float | None:
+    raw = (element.text or "").strip().replace(",", "")
+    if not raw or raw in {"-", "—"}:
+        return None
+
+    negative = raw.startswith("(") and raw.endswith(")")
+    if negative:
+        raw = raw[1:-1]
+
+    try:
+        value = float(raw)
+    except ValueError:
+        return None
+
+    scale = int(element.attrib.get("scale", "0") or "0")
+    value *= 10 ** scale
+    return -value if negative else value
+
+
+def filing_specific_fact(
+    sec: SecClient,
+    cik: str,
+    submissions: dict[str, Any],
+    metric: str,
+    concepts: list[str],
+) -> FactResult | None:
+    """Read the newest filing's extracted XBRL instance.
+
+    This is a fallback for cases where SEC Company Facts omits or lags a
+    current filer concept. It only accepts entity-wide, dimensionless facts.
+    """
+    filing = latest_financial_filing(submissions)
+    if not filing:
+        return None
+
+    accession = filing["accession"]
+    clean_accession = accession.replace("-", "")
+    base = (
+        f"https://www.sec.gov/Archives/edgar/data/"
+        f"{int(cik)}/{clean_accession}/"
+    )
+
+    index_json = sec.get_json(base + "index.json")
+    items = index_json.get("directory", {}).get("item", [])
+    instance_name = next(
+        (
+            str(item.get("name", ""))
+            for item in items
+            if str(item.get("name", "")).endswith("_htm.xml")
+        ),
+        "",
+    )
+    if not instance_name:
+        return None
+
+    root = ET.fromstring(sec.get_text(base + instance_name))
+
+    contexts: dict[str, dict[str, Any]] = {}
+    for element in root.iter():
+        if local_name(element.tag) != "context":
+            continue
+
+        context_id = element.attrib.get("id", "")
+        start_value = None
+        end_value = None
+        has_dimensions = False
+
+        for child in element.iter():
+            name = local_name(child.tag)
+            if name == "startDate":
+                start_value = parse_iso_date(child.text)
+            elif name == "endDate":
+                end_value = parse_iso_date(child.text)
+            elif name in {"explicitMember", "typedMember"}:
+                has_dimensions = True
+
+        if context_id and start_value and end_value:
+            contexts[context_id] = {
+                "start": start_value,
+                "end": end_value,
+                "has_dimensions": has_dimensions,
+                "duration": (end_value - start_value).days + 1,
+            }
+
+    candidates: list[dict[str, Any]] = []
+    concept_set = set(concepts)
+    for element in root.iter():
+        namespace = element.tag.split("}", 1)[0].lstrip("{") if "}" in element.tag else ""
+        concept = local_name(element.tag)
+        if concept not in concept_set or "fasb.org/us-gaap" not in namespace:
+            continue
+
+        context = contexts.get(element.attrib.get("contextRef", ""))
+        if not context or context["has_dimensions"]:
+            continue
+
+        value = numeric_xbrl_value(element)
+        if value is None:
+            continue
+
+        duration = int(context["duration"])
+        target = 91 if filing["form"] == "10-Q" else 365
+        tolerance = 35 if filing["form"] == "10-Q" else 45
+        if abs(duration - target) > tolerance:
+            continue
+
+        candidates.append(
+            {
+                "concept": concept,
+                "value": value,
+                "start": context["start"],
+                "end": context["end"],
+                "duration": duration,
+            }
+        )
+
+    if not candidates:
+        return None
+
+    report_date = parse_iso_date(filing["report_date"])
+    current_pool = (
+        [item for item in candidates if item["end"] == report_date]
+        if report_date
+        else candidates
+    )
+    if not current_pool:
+        current_pool = candidates
+
+    target_duration = 91 if filing["form"] == "10-Q" else 365
+    current_fact = max(
+        current_pool,
+        key=lambda item: (
+            item["end"],
+            -abs(item["duration"] - target_duration),
+            item["value"],
+        ),
+    )
+
+    prior_pool = [
+        item
+        for item in candidates
+        if item["end"] < current_fact["end"]
+        and 330 <= (current_fact["end"] - item["end"]).days <= 400
+        and abs(item["duration"] - current_fact["duration"]) <= 10
+    ]
+    prior_fact = (
+        min(
+            prior_pool,
+            key=lambda item: abs(
+                (current_fact["end"] - item["end"]).days - 364
+            ),
+        )
+        if prior_pool
+        else None
+    )
+
+    current = {
+        "val": current_fact["value"],
+        "form": filing["form"],
+        "filed": filing["filing_date"],
+        "end": current_fact["end"].isoformat(),
+        "accn": accession,
+        "fy": current_fact["end"].year,
+        "fp": "Q" if filing["form"] == "10-Q" else "FY",
+    }
+    prior = (
+        {
+            "val": prior_fact["value"],
+            "form": filing["form"],
+            "filed": filing["filing_date"],
+            "end": prior_fact["end"].isoformat(),
+            "accn": accession,
+            "fy": prior_fact["end"].year,
+            "fp": current["fp"],
+        }
+        if prior_fact
+        else None
+    )
+
+    return FactResult(
+        metric=metric,
+        concept=current_fact["concept"],
+        unit="USD",
+        current=current,
+        prior=prior,
+    )
+
+
 def percent_change(current: Any, prior: Any) -> float | str:
     try:
         current_number = float(current)
@@ -508,6 +734,24 @@ def main() -> None:
                     definition["metric"],
                     definition["concepts"],
                 )
+
+                # NVIDIA's current Revenue fact is present in the latest filing
+                # but can lag or be omitted in the aggregated Company Facts feed.
+                if signal_id == "SEC.NVDA.REVENUE":
+                    filing_fact = filing_specific_fact(
+                        sec,
+                        cik,
+                        submissions,
+                        definition["metric"],
+                        definition["concepts"],
+                    )
+                    if filing_fact is not None and (
+                        fact is None
+                        or str(filing_fact.current.get("end", ""))
+                        > str(fact.current.get("end", ""))
+                    ):
+                        fact = filing_fact
+
                 if fact is None:
                     failures.append(
                         f"{ticker}: no standardized fact found for "
