@@ -269,7 +269,9 @@ def select_fact(
     metric: str,
     concepts: list[str],
 ) -> FactResult | None:
+    """Choose the newest valid fact across all equivalent US-GAAP concepts."""
     us_gaap = companyfacts.get("facts", {}).get("us-gaap", {})
+    candidates: list[tuple[str, str, list[dict[str, Any]]]] = []
 
     for concept in concepts:
         node = us_gaap.get(concept)
@@ -281,34 +283,45 @@ def select_fact(
             continue
 
         unit, entries = result
-        if not entries:
-            continue
+        if entries:
+            candidates.append((concept, unit, entries))
 
-        current = entries[0]
+    if not candidates:
+        return None
 
-        # Prefer the same fiscal-period label in a different year.
-        prior = next(
-            (
-                item
-                for item in entries[1:]
-                if item.get("end") != current.get("end")
-                and item.get("fp") == current.get("fp")
-                and item.get("form") == current.get("form")
-            ),
-            None,
-        )
-        if prior is None and len(entries) > 1:
-            prior = entries[1]
+    # A filer can migrate between equivalent taxonomy concepts. Select the
+    # concept whose best fact has the newest filing/end date, rather than the
+    # first concept listed in the configuration.
+    concept, unit, entries = max(
+        candidates,
+        key=lambda candidate: (
+            str(candidate[2][0].get("filed", "")),
+            str(candidate[2][0].get("end", "")),
+        ),
+    )
+    current = entries[0]
 
-        return FactResult(
-            metric=metric,
-            concept=concept,
-            unit=unit,
-            current=current,
-            prior=prior,
-        )
+    # Prefer a comparable prior period from the same selected concept.
+    prior = next(
+        (
+            item
+            for item in entries[1:]
+            if item.get("end") != current.get("end")
+            and item.get("fp") == current.get("fp")
+            and item.get("form") == current.get("form")
+        ),
+        None,
+    )
+    if prior is None and len(entries) > 1:
+        prior = entries[1]
 
-    return None
+    return FactResult(
+        metric=metric,
+        concept=concept,
+        unit=unit,
+        current=current,
+        prior=prior,
+    )
 
 
 def percent_change(current: Any, prior: Any) -> float | str:
