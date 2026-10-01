@@ -9,8 +9,10 @@ on:
       - "pilot_macro_relay.py"
       - ".github/workflows/macro_pipeline.yml"
   schedule:
+    # Toronto is UTC-4 through 31 Oct 2026.
     - cron: "27 11,23 * 10 *"
-    - cron: "27 0,12 1-28 11 *"
+    # Toronto is UTC-5 from 1 Nov 2026; game ends 27 Nov.
+    - cron: "27 0,12 1-27 11 *"
 
 permissions:
   contents: read
