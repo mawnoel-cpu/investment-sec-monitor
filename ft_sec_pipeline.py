@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import os
 import time
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -26,6 +26,7 @@ from urllib3.util.retry import Retry
 SPREADSHEET_ID = "1ItUi3uYPK4AvuHQ6PHIZTRvQnVhMiLONefTpVLEzGGE"
 PORTFOLIO_SHEET = "Portfolio"
 SEC_FEED_SHEET = "SEC Feed"
+GAME_START = date(2026, 9, 1)
 GAME_END = datetime(2026, 11, 27, 23, 59, 59, tzinfo=ZoneInfo("America/Toronto"))
 
 RELEVANT_FORMS = {
@@ -121,10 +122,6 @@ def existing_keys(ws: gspread.Worksheet) -> set[str]:
 
 
 def first_empty_run_row(ws: gspread.Worksheet) -> int:
-    # Column P is the dedicated run log. Use only populated values in that
-    # column, rather than ws.row_count, because the SEC data table in A:M can
-    # extend much farther down the sheet and gspread can report stale grid
-    # dimensions during the same run.
     populated = ws.col_values(16)
     return max(8, len(populated) + 1)
 
@@ -170,6 +167,7 @@ def main() -> None:
     duplicates = 0
     failures: list[str] = []
     checked = 0
+    skipped_old = 0
 
     for ft_ticker in universe:
         sec_ticker = ft_ticker.split(":", 1)[0].upper()
@@ -191,6 +189,14 @@ def main() -> None:
             primary_docs = recent.get("primaryDocument", [])
 
             for i, form in enumerate(forms[:200]):
+                filing_date = filing_dates[i] if i < len(filing_dates) else ""
+                if filing_date:
+                    try:
+                        if date.fromisoformat(filing_date) < GAME_START:
+                            skipped_old += 1
+                            continue
+                    except ValueError:
+                        pass
                 if form not in RELEVANT_FORMS:
                     continue
                 accession = accessions[i] if i < len(accessions) else ""
@@ -201,7 +207,6 @@ def main() -> None:
                     duplicates += 1
                     continue
 
-                filing_date = filing_dates[i] if i < len(filing_dates) else ""
                 report_date = report_dates[i] if i < len(report_dates) else ""
                 description = descriptions[i] if i < len(descriptions) else ""
                 primary_doc = primary_docs[i] if i < len(primary_docs) else ""
@@ -231,7 +236,7 @@ def main() -> None:
 
     status = "Success" if not failures else ("Partial" if checked else "Failure")
     notes = (
-        "FT Game SEC discovery feed. "
+        f"FT Game SEC discovery feed; ignored {skipped_old} pre-game filings. "
         + ("; ".join(failures) if failures else "No issuer failures.")
     )
     append_run_log(feed_ws, status, checked, len(rows), duplicates, len(failures), notes)
@@ -241,6 +246,7 @@ def main() -> None:
         "issuers_checked": checked,
         "new_filings": len(rows),
         "duplicates": duplicates,
+        "pre_game_filings_skipped": skipped_old,
         "failures": failures,
     }
     print(json.dumps(result, ensure_ascii=False))
