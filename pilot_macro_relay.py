@@ -18,7 +18,7 @@ def latest(rows, id_col, id_value, date_col, value_col, n=5):
             continue
         d, v = str(row[date_col]).strip(), str(row[value_col]).strip()
         if d and v and v != ".":
-            found[d] = row  # later pilot rows are newer vintages for the same date
+            found[d] = row
     return sorted(found.values(), key=lambda r: str(r[date_col]))[-n:]
 
 def fred_rows(captured: str) -> tuple[list[list[Any]], list[str]]:
@@ -29,7 +29,8 @@ def fred_rows(captured: str) -> tuple[list[list[Any]], list[str]]:
         raw = ws.get(f"A{start}:H{ws.row_count}")
         for sid, (label, units0, freq0) in p.FRED_SERIES.items():
             obs = latest(raw, 1, sid, 3, 4)
-            if not obs: errors.append(f"FRED relay {sid}: no observations")
+            if not obs:
+                errors.append(f"FRED relay {sid}: no observations")
             for r in obs:
                 d, v = str(r[3]), str(r[4])
                 units = str(r[5]) if len(r) > 5 and r[5] else units0
@@ -46,7 +47,8 @@ def eia_rows(captured: str) -> tuple[list[list[Any]], list[str], int]:
         raw = ws.get(f"A2:K{ws.row_count}")
         for sid, (label, units0, freq0) in EIA.items():
             obs = latest(raw, 1, sid, 3, 4)
-            if not obs: errors.append(f"EIA relay {sid}: no observations")
+            if not obs:
+                errors.append(f"EIA relay {sid}: no observations")
             for r in obs:
                 d, v = str(r[3]), str(r[4])
                 units = str(r[5]) if len(r) > 5 and r[5] else units0
@@ -77,26 +79,34 @@ def main() -> None:
         return
 
     ws = p.google_client().open_by_key(p.SPREADSHEET_ID).worksheet(p.MACRO_SHEET)
-    keys = p.existing_keys(ws)
     captured = now.isoformat()
 
     fred, fred_errors = fred_rows(captured)
     eia, eia_errors, eia_checked = eia_rows(captured)
     cftc, cftc_errors = p.cftc_rows(captured)
+    snapshot = fred + eia + cftc
 
-    # Append all source batches together so multiple append calls cannot collide on
-    # the same Google Sheets logical table boundary.
-    new_rows = p.append_rows_dedup(ws, fred + eia + cftc, keys)
+    # FT Macro Feed is a current decision-support snapshot. Historical depth lives
+    # in the pilot raw tabs, so rewrite this bounded area each run instead of
+    # appending indefinitely or relying on stale duplicate keys.
+    ws.batch_clear(["A8:O250"])
+    if snapshot:
+        end_row = 7 + len(snapshot)
+        ws.update(
+            range_name=f"A8:O{end_row}",
+            values=snapshot,
+            value_input_option="USER_ENTERED",
+        )
 
     errors = fred_errors + eia_errors + cftc_errors
     checked = len(p.FRED_SERIES) + eia_checked + len(p.CFTC_COMMODITIES) + len(p.CFTC_TFF)
     status = "Success" if not errors else "Partial"
-    p.append_run_log(ws, "FRED / EIA / CFTC", status, checked, new_rows)
+    p.append_run_log(ws, "FRED / EIA / CFTC", status, checked, len(snapshot))
 
     print(p.json.dumps({
         "status": status,
         "series_checked": checked,
-        "new_rows": new_rows,
+        "snapshot_rows": len(snapshot),
         "fred_rows_seen": len(fred),
         "eia_rows_seen": len(eia),
         "cftc_rows_seen": len(cftc),
