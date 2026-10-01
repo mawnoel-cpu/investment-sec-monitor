@@ -1,5 +1,14 @@
+# Local/sensitive credentials
 credentials.json
-*.json
+token.json
+.clasprc.json
+.clasp.json
+**/.clasprc.json
+**/.clasp.json
+*service-account*.json
+*service_account*.json
+
+# Python/local environment
 __pycache__/
 *.pyc
 .env
