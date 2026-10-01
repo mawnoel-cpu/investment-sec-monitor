@@ -1,4 +1,3 @@
-from collections import defaultdict
 from typing import Any
 import ft_macro_pipeline as p
 
@@ -19,7 +18,7 @@ def latest(rows, id_col, id_value, date_col, value_col, n=5):
             continue
         d, v = str(row[date_col]).strip(), str(row[value_col]).strip()
         if d and v and v != ".":
-            found[(d, v)] = row
+            found[d] = row  # later pilot rows are newer vintages for the same date
     return sorted(found.values(), key=lambda r: str(r[date_col]))[-n:]
 
 def fred_rows(captured: str) -> tuple[list[list[Any]], list[str]]:
@@ -30,8 +29,7 @@ def fred_rows(captured: str) -> tuple[list[list[Any]], list[str]]:
         raw = ws.get(f"A{start}:H{ws.row_count}")
         for sid, (label, units0, freq0) in p.FRED_SERIES.items():
             obs = latest(raw, 1, sid, 3, 4)
-            if not obs:
-                errors.append(f"FRED relay {sid}: no observations")
+            if not obs: errors.append(f"FRED relay {sid}: no observations")
             for r in obs:
                 d, v = str(r[3]), str(r[4])
                 units = str(r[5]) if len(r) > 5 and r[5] else units0
@@ -48,8 +46,7 @@ def eia_rows(captured: str) -> tuple[list[list[Any]], list[str], int]:
         raw = ws.get(f"A2:K{ws.row_count}")
         for sid, (label, units0, freq0) in EIA.items():
             obs = latest(raw, 1, sid, 3, 4)
-            if not obs:
-                errors.append(f"EIA relay {sid}: no observations")
+            if not obs: errors.append(f"EIA relay {sid}: no observations")
             for r in obs:
                 d, v = str(r[3]), str(r[4])
                 units = str(r[5]) if len(r) > 5 and r[5] else units0
