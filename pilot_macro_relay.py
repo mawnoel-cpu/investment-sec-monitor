@@ -70,5 +70,39 @@ p.fred_rows = fred_rows
 p.eia_rows = eia_rows
 p._number = number_alias
 
+def main() -> None:
+    now = p.datetime.now(p.ZoneInfo("America/Toronto"))
+    if now > p.GAME_END:
+        print("FT Game ended; macro collector exited without changes.")
+        return
+
+    ws = p.google_client().open_by_key(p.SPREADSHEET_ID).worksheet(p.MACRO_SHEET)
+    keys = p.existing_keys(ws)
+    captured = now.isoformat()
+
+    fred, fred_errors = fred_rows(captured)
+    eia, eia_errors, eia_checked = eia_rows(captured)
+    cftc, cftc_errors = p.cftc_rows(captured)
+
+    # Append all source batches together so multiple append calls cannot collide on
+    # the same Google Sheets logical table boundary.
+    new_rows = p.append_rows_dedup(ws, fred + eia + cftc, keys)
+
+    errors = fred_errors + eia_errors + cftc_errors
+    checked = len(p.FRED_SERIES) + eia_checked + len(p.CFTC_COMMODITIES) + len(p.CFTC_TFF)
+    status = "Success" if not errors else "Partial"
+    p.append_run_log(ws, "FRED / EIA / CFTC", status, checked, new_rows)
+
+    print(p.json.dumps({
+        "status": status,
+        "series_checked": checked,
+        "new_rows": new_rows,
+        "fred_rows_seen": len(fred),
+        "eia_rows_seen": len(eia),
+        "cftc_rows_seen": len(cftc),
+        "errors": errors,
+        "electricity_enabled": False,
+    }, ensure_ascii=False))
+
 if __name__ == "__main__":
-    p.main()
+    main()
