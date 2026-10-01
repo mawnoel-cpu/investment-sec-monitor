@@ -6,12 +6,10 @@ on:
     branches: [main]
     paths:
       - "ft_macro_pipeline.py"
-      - "ft_macro_runner.py"
+      - "pilot_macro_relay.py"
       - ".github/workflows/macro_pipeline.yml"
   schedule:
-    # Toronto is UTC-4 through 31 Oct 2026: 07:27 and 19:27 local.
     - cron: "27 11,23 * 10 *"
-    # Toronto is UTC-5 from 1 Nov 2026; the 00:27 UTC run is prior-day 19:27 local.
     - cron: "27 0,12 1-28 11 *"
 
 permissions:
@@ -38,6 +36,4 @@ jobs:
       - name: Update FT Game macro feed
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
-          EIA_API_KEY: ${{ secrets.EIA_API_KEY }}
-        run: python ft_macro_runner.py
+        run: python pilot_macro_relay.py
