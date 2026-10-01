@@ -127,14 +127,24 @@ def diagnostics(rows, expected, now):
         observation_age = (now.date() - parse_date(latest[4]).date()).days
         retrieval_age = round((now - parse_date(latest[0])).total_seconds() / 3600, 1)
         frequency = str(latest[7]).lower()
-        limit = (
+        observation_limit = (
             150 if frequency in ("q", "quarterly")
             else 45 if frequency in ("m", "monthly")
             else 14 if frequency in ("w", "weekly")
             else 7
         )
-        stale = observation_age > limit or retrieval_age > (
-            192 if group[0] == "CFTC" else 36
+        # Retrieval freshness must respect the publication cadence. A weekly
+        # EIA/CFTC observation can be perfectly healthy several days after the
+        # last upstream retrieval, while daily series need a tighter guard.
+        retrieval_limit_hours = (
+            2400 if frequency in ("q", "quarterly")
+            else 840 if frequency in ("m", "monthly")
+            else 192 if frequency in ("w", "weekly")
+            else 96
+        )
+        stale = (
+            observation_age > observation_limit
+            or retrieval_age > retrieval_limit_hours
         )
         details[key] = {
             "observation": parse_date(latest[4]).date().isoformat(),
