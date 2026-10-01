@@ -3,6 +3,9 @@
 Discovery-only collector. It reads the FT Game portfolio universe, fetches recent
 SEC filings, deduplicates by accession, and writes to the SEC Feed tab. It does
 not create eligible Evidence or trading signals.
+
+This file is wired to GitHub Actions so collector changes automatically run a
+verification pass in addition to the normal twice-daily schedule.
 """
 
 from __future__ import annotations
@@ -81,7 +84,6 @@ def google_client() -> gspread.Client:
 
 
 def portfolio_universe(ws: gspread.Worksheet) -> list[str]:
-    # Portfolio tickers occupy A8:A19. Keep both holdings and reserves.
     values = ws.get("A8:A19")
     tickers: list[str] = []
     for row in values:
@@ -114,8 +116,7 @@ def filing_url(cik: str, accession: str, primary_document: str) -> str:
 
 
 def existing_keys(ws: gspread.Worksheet) -> set[str]:
-    last_row = ws.row_count
-    values = ws.get(f"L8:L{last_row}")
+    values = ws.get(f"L8:L{ws.row_count}")
     return {str(row[0]).strip() for row in values if row and str(row[0]).strip()}
 
 
