@@ -10,6 +10,7 @@ import csv
 import io
 import json
 import os
+import math
 from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -203,6 +204,9 @@ def _socrata_rows(url: str, code: str) -> list[dict[str, Any]]:
     payload = http_get(url, params=params).json()
     if not isinstance(payload, list):
         raise ValueError("unexpected CFTC response")
+    expected = {"023651":"NAT GAS NYME", "067651":"WTI-PHYSICAL", "085692":"COPPER- #1", "088691":"GOLD", "043602":"UST 10Y NOTE"}
+    if not payload or any(str(r.get('cftc_contract_market_code','')) != code or r.get('contract_market_name') != expected[code] for r in payload):
+        raise ValueError('CFTC contract identity mismatch')
     return payload
 
 
@@ -210,7 +214,10 @@ def _number(item: dict[str, Any], *keys: str) -> float:
     for key in keys:
         raw = item.get(key)
         if raw not in (None, ""):
-            return float(raw)
+            value = float(raw)
+            if not math.isfinite(value):
+                raise ValueError("Non-finite CFTC value")
+            return value
     raise KeyError(f"missing fields: {', '.join(keys)}")
 
 
@@ -230,6 +237,8 @@ def cftc_rows(captured: str) -> tuple[list[list[Any]], list[str]]:
                 long_pos = _number(item, "m_money_positions_long_all")
                 short_pos = _number(item, "m_money_positions_short_all")
                 open_interest = _number(item, "open_interest_all")
+                if long_pos < 0 or short_pos < 0 or open_interest <= 0:
+                    raise ValueError("Invalid CFTC positions")
                 net = long_pos - short_pos
                 ratio = net / open_interest if open_interest else 0.0
                 measures = [
@@ -248,7 +257,7 @@ def cftc_rows(captured: str) -> tuple[list[list[Any]], list[str]]:
                         f"Disaggregated futures and options combined; {contract_units}",
                     ])
         except Exception as exc:  # noqa: BLE001
-            errors.append(f"CFTC {code}: {type(exc).__name__}: {exc}")
+            errors.append(f"CFTC {code}: {type(exc).__name__}")
 
     for code, (label, contract_units) in CFTC_TFF.items():
         try:
@@ -258,6 +267,8 @@ def cftc_rows(captured: str) -> tuple[list[list[Any]], list[str]]:
                 long_pos = _number(item, "lev_money_positions_long_all")
                 short_pos = _number(item, "lev_money_positions_short_all")
                 open_interest = _number(item, "open_interest_all")
+                if long_pos < 0 or short_pos < 0 or open_interest <= 0:
+                    raise ValueError("Invalid CFTC positions")
                 net = long_pos - short_pos
                 ratio = net / open_interest if open_interest else 0.0
                 measures = [
@@ -276,47 +287,13 @@ def cftc_rows(captured: str) -> tuple[list[list[Any]], list[str]]:
                         f"TFF futures and options combined; {contract_units}",
                     ])
         except Exception as exc:  # noqa: BLE001
-            errors.append(f"CFTC {code}: {type(exc).__name__}: {exc}")
+            errors.append(f"CFTC {code}: {type(exc).__name__}")
     return rows, errors
 
 
-def main() -> None:
-    now = datetime.now(ZoneInfo("America/Toronto"))
-    if now > GAME_END:
-        print("FT Game ended; macro collector exited without changes.")
-        return
-
-    google = google_client()
-    ws = google.open_by_key(SPREADSHEET_ID).worksheet(MACRO_SHEET)
-    keys = existing_keys(ws)
-    captured = now.isoformat()
-
-    fred, fred_errors = fred_rows(captured)
-    eia, eia_errors, eia_checked = eia_rows(captured)
-    cftc, cftc_errors = cftc_rows(captured)
-
-    new_rows = 0
-    new_rows += append_rows_dedup(ws, fred, keys)
-    new_rows += append_rows_dedup(ws, eia, keys)
-    new_rows += append_rows_dedup(ws, cftc, keys)
-
-    errors = fred_errors + eia_errors + cftc_errors
-    checked = len(FRED_SERIES) + eia_checked + len(CFTC_COMMODITIES) + len(CFTC_TFF)
-    status = "Success" if not errors else "Partial"
-    append_run_log(ws, "FRED / EIA / CFTC", status, checked, new_rows)
-
-    result = {
-        "status": status,
-        "series_checked": checked,
-        "new_rows": new_rows,
-        "fred_rows_seen": len(fred),
-        "eia_rows_seen": len(eia),
-        "cftc_rows_seen": len(cftc),
-        "errors": errors,
-        "electricity_enabled": False,
-    }
-    print(json.dumps(result, ensure_ascii=False))
-
+def main():
+    from ft_macro_coordinator import main as run
+    return run()
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
