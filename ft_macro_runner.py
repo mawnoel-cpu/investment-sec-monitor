@@ -1,15 +1,12 @@
 """Compatibility runner for FT Game macro monitor.
 
-Patches two source-specific issues without changing the main collector's sheet/write logic:
-1) batch FRED retrieval over a bounded date range to avoid six slow sequential downloads;
-2) current CFTC TFF leveraged-money field aliases.
+Uses the official FRED API when FRED_API_KEY is configured and current CFTC TFF
+leveraged-money field aliases, while preserving the main collector's sheet/write logic.
 """
 
 from __future__ import annotations
 
-import csv
-import io
-from datetime import datetime, timedelta
+import os
 from typing import Any
 
 import requests
@@ -18,32 +15,38 @@ import ft_macro_pipeline as pipeline
 
 
 def fred_rows(captured: str) -> tuple[list[list[Any]], list[str]]:
-    rows: list[list[Any]] = []
-    try:
-        end = datetime.fromisoformat(captured).date()
-        start = end - timedelta(days=900)  # comfortably covers five quarterly observations
-        response = requests.get(
-            "https://fred.stlouisfed.org/graph/fredgraph.csv",
-            params={
-                "id": ",".join(pipeline.FRED_SERIES.keys()),
-                "cosd": start.isoformat(),
-                "coed": end.isoformat(),
-            },
-            timeout=90,
-            headers={"User-Agent": "FT Game Intelligence Macro Monitor/1.1"},
-        )
-        response.raise_for_status()
-        parsed = list(csv.DictReader(io.StringIO(response.text)))
+    api_key = os.environ.get("FRED_API_KEY", "").strip()
+    if not api_key:
+        return [], ["FRED: missing FRED_API_KEY secret"]
 
-        for series_id, (label, units, frequency) in pipeline.FRED_SERIES.items():
+    rows: list[list[Any]] = []
+    errors: list[str] = []
+    for series_id, (label, units, frequency) in pipeline.FRED_SERIES.items():
+        try:
+            response = requests.get(
+                "https://api.stlouisfed.org/fred/series/observations",
+                params={
+                    "series_id": series_id,
+                    "api_key": api_key,
+                    "file_type": "json",
+                    "sort_order": "desc",
+                    "limit": 5,
+                },
+                timeout=30,
+                headers={"User-Agent": "FT Game Intelligence Macro Monitor/1.2"},
+            )
+            response.raise_for_status()
+            payload = response.json()
             observations = [
-                item for item in parsed if item.get(series_id) not in (None, "", ".")
-            ][-5:]
+                item for item in payload.get("observations", [])
+                if item.get("value") not in (None, "", ".")
+            ]
             if not observations:
-                raise ValueError(f"no observations returned for {series_id}")
+                raise ValueError("no observations returned")
+            observations.reverse()
             for item in observations:
-                date = item.get("observation_date") or item.get("DATE") or ""
-                value = item.get(series_id, "")
+                date = str(item.get("date", ""))
+                value = item.get("value", "")
                 key = f"FRED:{series_id}:{date}:{value}"
                 rows.append([
                     captured,
@@ -62,9 +65,9 @@ def fred_rows(captured: str) -> tuple[list[list[Any]], list[str]]:
                     "Official source",
                     "Context only; review the series and current market regime before using in Evidence.",
                 ])
-        return rows, []
-    except Exception as exc:  # noqa: BLE001
-        return [], [f"FRED batch: {type(exc).__name__}: {exc}"]
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"FRED {series_id}: {type(exc).__name__}: {exc}")
+    return rows, errors
 
 
 _original_number = pipeline._number
@@ -75,10 +78,9 @@ def number_with_tff_aliases(item: dict[str, Any], *keys: str) -> float:
     for key in keys:
         expanded.append(key)
         if key == "lev_money_positions_long_all":
-            expanded.extend(["lev_money_positions_long", "lev_money_positions_long_all"])
+            expanded.append("lev_money_positions_long")
         elif key == "lev_money_positions_short_all":
-            expanded.extend(["lev_money_positions_short", "lev_money_positions_short_all"])
-    # preserve order while removing duplicates
+            expanded.append("lev_money_positions_short")
     deduped = list(dict.fromkeys(expanded))
     return _original_number(item, *deduped)
 
