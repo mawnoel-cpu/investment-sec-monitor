@@ -121,11 +121,12 @@ def existing_keys(ws: gspread.Worksheet) -> set[str]:
 
 
 def first_empty_run_row(ws: gspread.Worksheet) -> int:
-    values = ws.get(f"P8:P{ws.row_count}")
-    for idx, row in enumerate(values, start=8):
-        if not row or not str(row[0]).strip():
-            return idx
-    return max(8, ws.row_count + 1)
+    # Column P is the dedicated run log. Use only populated values in that
+    # column, rather than ws.row_count, because the SEC data table in A:M can
+    # extend much farther down the sheet and gspread can report stale grid
+    # dimensions during the same run.
+    populated = ws.col_values(16)
+    return max(8, len(populated) + 1)
 
 
 def append_run_log(
@@ -138,6 +139,8 @@ def append_run_log(
     notes: str,
 ) -> None:
     row = first_empty_run_row(ws)
+    if row > ws.row_count:
+        ws.add_rows(row - ws.row_count)
     ws.update(
         range_name=f"P{row}:V{row}",
         values=[[datetime.now(ZoneInfo("America/Toronto")).isoformat(), status,
@@ -247,4 +250,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
