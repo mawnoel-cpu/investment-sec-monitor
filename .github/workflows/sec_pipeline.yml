@@ -9,9 +9,9 @@ on:
       - ".github/workflows/sec_pipeline.yml"
   schedule:
     # Toronto is UTC-4 through 31 Oct 2026.
-    - cron: "17 11,23 * 10 *"
+    - cron: "17 11,17,23 * 10 *"   # 07:17, 13:17, 19:17 Toronto
     # Toronto is UTC-5 from 1 Nov 2026; game ends 27 Nov.
-    - cron: "17 0,12 1-27 11 *"
+    - cron: "17 0,12,18 1-27 11 *" # 07:17, 13:17, 19:17 Toronto (standard time)
 
 permissions:
   contents: read
