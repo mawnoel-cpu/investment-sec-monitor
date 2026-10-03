@@ -300,6 +300,7 @@ def write_verified(book, ws, rows, log, log_row):
 
 def main():
     import ft_macro_pipeline as pipeline
+    from concurrent.futures import ThreadPoolExecutor
 
     now = datetime.now(TZ)
     if now > pipeline.GAME_END:
@@ -324,17 +325,22 @@ def main():
     )
 
     incoming, errors = [], []
-    for source, collector in (
-        ("FRED", pipeline.fred_rows),
-        ("EIA", pipeline.eia_rows),
-        ("CFTC", pipeline.cftc_rows),
-    ):
-        try:
-            result = collector(now.isoformat())
-            incoming.extend(result[0])
-            errors.extend(result[1])
-        except Exception as exc:
-            errors.append(source + ": collection failed (" + type(exc).__name__ + ")")
+    # Independent source routes run together; bounded HTTP retries ensure even
+    # an unavailable source leaves time to commit an honest Partial/Failed log.
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        jobs = [(source, pool.submit(collector, now.isoformat())) for source, collector in (
+            ("FRED", pipeline.fred_rows),
+            ("EIA", pipeline.eia_rows),
+            ("CFTC", pipeline.cftc_rows),
+        )]
+        for source, job in jobs:
+            try:
+                result = job.result()
+                incoming.extend(result[0])
+                errors.extend(result[1])
+                print(json.dumps({"source": source, "rows": len(result[0]), "failures": len(result[1])}), flush=True)
+            except Exception as exc:
+                errors.append(source + ": collection failed (" + type(exc).__name__ + ")")
 
     rows, added, revised, refreshed, merge_errors = merge_rows(
         existing, incoming, expected, now

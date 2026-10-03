@@ -83,13 +83,13 @@ def http_get(url: str, *, params: dict[str, Any] | None = None):
 
     session = requests.Session()
     session.mount("https://", HTTPAdapter(max_retries=Retry(
-        total=2, backoff_factor=1, status_forcelist=(429, 500, 502, 503, 504),
+        total=1, backoff_factor=1, status_forcelist=(429, 500, 502, 503, 504),
         allowed_methods=frozenset({"GET"}), respect_retry_after_header=True,
     )))
     response = session.get(
         url,
         params=params,
-        timeout=45,
+        timeout=(10, 20),
         headers={"User-Agent": "FT Game Intelligence Macro Monitor/1.0"},
     )
     response.raise_for_status()
