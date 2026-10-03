@@ -1,7 +1,7 @@
 """Sole FT Game macro writer with preservation, freshness and verified logging.
 
-FRED/EIA remain upstream in the pilot until a separately verified migration.
-Do not enable the staged direct Apps Script macro writers while this relay is active.
+FRED, EIA and CFTC are collected directly from their official public sources.
+This coordinator is the sole raw-data writer; intake owns eligible Evidence.
 """
 from __future__ import annotations
 
@@ -142,18 +142,38 @@ def diagnostics(rows, expected, now):
             else 192 if frequency in ("w", "weekly")
             else 96
         )
+        unverified = latest[13] != "Verified data"
+        # Weekly releases have a known normal publication cadence. Age alone
+        # can otherwise make a missed new release look fresh for two weeks.
+        expected_date = None
+        if group[0] == "CFTC":
+            release = now.date() - timedelta(days=(now.weekday() - 4) % 7)
+            if now.weekday() == 4 and (now.hour, now.minute) < (15, 30):
+                release -= timedelta(days=7)
+            expected_date = release - timedelta(days=3)
+        elif group == ("EIA", "NG.NW2_EPG0_SWO_R48_BCF.W"):
+            release = now.date() - timedelta(days=(now.weekday() - 3) % 7)
+            if now.weekday() == 3 and (now.hour, now.minute) < (10, 30):
+                release -= timedelta(days=7)
+            expected_date = release - timedelta(days=6)
+        overdue = expected_date is not None and parse_date(latest[4]).date() < expected_date
         stale = (
             observation_age > observation_limit
             or retrieval_age > retrieval_limit_hours
+            or overdue
         )
         details[key] = {
             "observation": parse_date(latest[4]).date().isoformat(),
             "age_days": observation_age,
             "retrieval_age_hours": retrieval_age,
-            "status": "Stale" if stale else "Current",
+            "verification": latest[13],
+            "normal_latest_due": expected_date.isoformat() if expected_date else None,
+            "status": "Unverified" if unverified else "Stale" if stale else "Current",
         }
+        if unverified:
+            errors.append(key + ": latest observation is not independently verified")
         if stale:
-            errors.append(key + ": stale observation or upstream retrieval")
+            errors.append(key + ": stale observation/retrieval or normal release overdue; verify any official delay")
     return details, errors
 
 
@@ -221,12 +241,25 @@ def write_verified(book, ws, rows, log, log_row):
         )
     if rows:
         requests.append(update(ws.id, 7, 0, rows))
+        for column, kind, pattern in ((0, "DATE_TIME", "dd/MM/yyyy HH:mm:ss"), (4, "DATE", "dd/MM/yyyy")):
+            requests.append({"repeatCell": {
+                "range": {"sheetId": ws.id, "startRowIndex": 7, "endRowIndex": 7 + len(rows),
+                          "startColumnIndex": column, "endColumnIndex": column + 1},
+                "cell": {"userEnteredFormat": {"numberFormat": {"type": kind, "pattern": pattern}}},
+                "fields": "userEnteredFormat.numberFormat",
+            }})
 
     # A provisional record cannot claim completion before sheet readback succeeds.
     pending = list(log)
     pending[2] = "Partial"
     pending[7] = "Write committed; readback pending. " + str(log[7])
     requests.append(update(ws.id, log_row - 1, 17, [pending]))
+    requests.append({"repeatCell": {
+        "range": {"sheetId": ws.id, "startRowIndex": log_row - 1, "endRowIndex": log_row,
+                  "startColumnIndex": 17, "endColumnIndex": 18},
+        "cell": {"userEnteredFormat": {"numberFormat": {"type": "DATE_TIME", "pattern": "dd/MM/yyyy HH:mm:ss"}}},
+        "fields": "userEnteredFormat.numberFormat",
+    }})
 
     for name, end_row in (
         ("FTMacroObservations", 7 + len(rows)),
@@ -267,7 +300,6 @@ def write_verified(book, ws, rows, log, log_row):
 
 def main():
     import ft_macro_pipeline as pipeline
-    import pilot_macro_relay as relay
 
     now = datetime.now(TZ)
     if now > pipeline.GAME_END:
@@ -284,7 +316,7 @@ def main():
     )
     expected = (
         {("FRED", series) for series in pipeline.FRED_SERIES}
-        | {("EIA", series) for series in relay.EIA}
+        | {("EIA", series) for series, meta in pipeline.EIA_SERIES.items() if meta[4]}
         | {
             ("CFTC", series)
             for series in list(pipeline.CFTC_COMMODITIES) + list(pipeline.CFTC_TFF)
@@ -293,8 +325,8 @@ def main():
 
     incoming, errors = [], []
     for source, collector in (
-        ("FRED", relay.fred_rows),
-        ("EIA", relay.eia_rows),
+        ("FRED", pipeline.fred_rows),
+        ("EIA", pipeline.eia_rows),
         ("CFTC", pipeline.cftc_rows),
     ):
         try:
@@ -322,7 +354,7 @@ def main():
             "rows_retained": len(rows),
             "readback": "verified before final status",
             "workflow_semantics": "Partial is a successful degraded run; only Failed or write/readback errors fail the workflow.",
-            "upstream": "Pilot FRED/EIA; direct CFTC. Apps Script FT macro writers must remain inactive.",
+            "upstream": "Direct official FRED CSV, EIA history workbooks and CFTC combined reports; FT workbook only. Other macro writers remain inactive.",
         },
         ensure_ascii=False,
     )

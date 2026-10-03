@@ -15,9 +15,6 @@ from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
-import gspread
-import requests
-from google.oauth2.service_account import Credentials
 
 SPREADSHEET_ID = "1ItUi3uYPK4AvuHQ6PHIZTRvQnVhMiLONefTpVLEzGGE"
 MACRO_SHEET = "Macro Feed"
@@ -39,12 +36,15 @@ FRED_SERIES = {
 
 EIA_SERIES = {
     "NG.NW2_EPG0_SWO_R48_BCF.W": (
-        "US natural gas storage", "BCF", "Weekly", "Verified series from pilot", True
+        "Lower-48 natural gas working underground storage", "BCF", "Weekly", "Official EIA history workbook; billion cubic feet", True
     ),
     "PET.WCESTUS1.W": (
-        "US crude oil stocks", "Thousand barrels", "Weekly", "Verified series from pilot", True
+        "US crude oil stocks excluding SPR", "Thousand barrels", "Weekly", "Official EIA history workbook; excludes strategic reserves", True
     ),
-    # Retained from the pilot but disabled until its v2 value/facet mapping is verified.
+    "NG.RNGWHHD.D": (
+        "Henry Hub natural gas spot price", "USD per MMBtu", "Daily", "Official EIA Henry Hub history workbook", True
+    ),
+    # Electricity remains excluded until independently validated.
     "ELEC.GEN.ALL-US-99.M": (
         "US electricity generation", "", "Monthly",
         "Disabled pending verification of EIA v2 facet/value mapping", False
@@ -65,7 +65,10 @@ CFTC_DISAGG_URL = "https://publicreporting.cftc.gov/resource/kh3c-gbw2.json"
 CFTC_TFF_URL = "https://publicreporting.cftc.gov/resource/yw9f-hn96.json"
 
 
-def google_client() -> gspread.Client:
+def google_client():
+    import gspread
+    from google.oauth2.service_account import Credentials
+
     raw = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "")
     if not raw:
         raise RuntimeError("Missing GOOGLE_SERVICE_ACCOUNT_JSON secret")
@@ -73,8 +76,17 @@ def google_client() -> gspread.Client:
     return gspread.authorize(credentials)
 
 
-def http_get(url: str, *, params: dict[str, Any] | None = None) -> requests.Response:
-    response = requests.get(
+def http_get(url: str, *, params: dict[str, Any] | None = None):
+    import requests
+    from requests.adapters import HTTPAdapter
+    from urllib3.util.retry import Retry
+
+    session = requests.Session()
+    session.mount("https://", HTTPAdapter(max_retries=Retry(
+        total=2, backoff_factor=1, status_forcelist=(429, 500, 502, 503, 504),
+        allowed_methods=frozenset({"GET"}), respect_retry_after_header=True,
+    )))
+    response = session.get(
         url,
         params=params,
         timeout=45,
@@ -84,12 +96,12 @@ def http_get(url: str, *, params: dict[str, Any] | None = None) -> requests.Resp
     return response
 
 
-def existing_keys(ws: gspread.Worksheet) -> set[str]:
+def existing_keys(ws: Any) -> set[str]:
     values = ws.get(f"L8:L{ws.row_count}")
     return {str(row[0]).strip() for row in values if row and str(row[0]).strip()}
 
 
-def append_rows_dedup(ws: gspread.Worksheet, candidate_rows: list[list[Any]], keys: set[str]) -> int:
+def append_rows_dedup(ws: Any, candidate_rows: list[list[Any]], keys: set[str]) -> int:
     rows: list[list[Any]] = []
     for row in candidate_rows:
         key = str(row[11]).strip()
@@ -102,7 +114,7 @@ def append_rows_dedup(ws: gspread.Worksheet, candidate_rows: list[list[Any]], ke
     return len(rows)
 
 
-def first_empty_log_row(ws: gspread.Worksheet) -> int:
+def first_empty_log_row(ws: Any) -> int:
     values = ws.get(f"R8:R{ws.row_count}")
     for offset, row in enumerate(values):
         if not row or not str(row[0]).strip():
@@ -112,7 +124,7 @@ def first_empty_log_row(ws: gspread.Worksheet) -> int:
     return old_rows + 1
 
 
-def append_run_log(ws: gspread.Worksheet, source: str, status: str, series_checked: int, new_rows: int) -> None:
+def append_run_log(ws: Any, source: str, status: str, series_checked: int, new_rows: int) -> None:
     row = first_empty_log_row(ws)
     ws.update(
         range_name=f"R{row}:V{row}",
@@ -143,55 +155,86 @@ def fred_rows(captured: str) -> tuple[list[list[Any]], list[str]]:
             for item in observations:
                 date = item.get("observation_date") or item.get("DATE") or ""
                 value = item.get(series_id, "")
-                key = f"FRED:{series_id}:{date}:{value}"
+                key = f"FRED:{series_id}:{date}:Observation"
                 rows.append([
-                    captured, "FRED", series_id, label, date, value, units, frequency,
+                    captured, "FRED", series_id, label, date, float(value), units, frequency,
                     "Observation", "US macro/financial conditions",
                     f"https://fred.stlouisfed.org/series/{series_id}", key,
-                    captured[:10], "Official source",
+                    captured[:10], "Verified data",
                     "Context only; review the series and current market regime before using in Evidence.",
                 ])
         except Exception as exc:  # noqa: BLE001
-            errors.append(f"FRED {series_id}: {type(exc).__name__}: {exc}")
+            errors.append(f"FRED {series_id}: {type(exc).__name__}")
     return rows, errors
 
 
-def _eia_data(payload: dict[str, Any]) -> list[dict[str, Any]]:
-    response = payload.get("response", {})
-    data = response.get("data", [])
-    return data if isinstance(data, list) else []
+EIA_DOWNLOADS = {
+    "NG.NW2_EPG0_SWO_R48_BCF.W": (
+        "https://www.eia.gov/dnav/ng/xls/NG.NW2_EPG0_SWO_R48_BCF.W.xls",
+        "https://www.eia.gov/dnav/ng/hist/nw2_epg0_swo_r48_bcfw.htm",
+        ("lower 48", "working underground storage", "billion cubic feet"),
+    ),
+    "PET.WCESTUS1.W": (
+        "https://www.eia.gov/dnav/pet/xls/PET.WCESTUS1.W.xls",
+        "https://www.eia.gov/dnav/pet/hist/LeafHandler.ashx?n=PET&s=WCESTUS1&f=W",
+        ("excluding spr", "crude oil", "thousand barrels"),
+    ),
+    "NG.RNGWHHD.D": (
+        "https://www.eia.gov/dnav/ng/xls/NG.RNGWHHD.D.xls",
+        "https://www.eia.gov/dnav/ng/hist/rngwhhdd.htm",
+        ("henry hub", "spot price", "dollars per million btu"),
+    ),
+}
+
+
+def eia_workbook_observations(book, series_id: str) -> list[tuple[str, float]]:
+    """Accept only the exact official history series, category and units."""
+    import xlrd
+    tokens = EIA_DOWNLOADS[series_id][2]
+    for sheet in book.sheets():
+        if sheet.ncols < 2:
+            continue
+        header = " ".join(
+            str(sheet.cell_value(r, c)).lower()
+            for r in range(min(12, sheet.nrows))
+            for c in range(min(4, sheet.ncols))
+            if sheet.cell_type(r, c) == xlrd.XL_CELL_TEXT
+        )
+        if not all(token in header for token in tokens):
+            continue
+        observations = []
+        for r in range(sheet.nrows):
+            if sheet.cell_type(r, 0) != xlrd.XL_CELL_DATE:
+                continue
+            if sheet.cell_type(r, 1) != xlrd.XL_CELL_NUMBER:
+                continue
+            date = xlrd.xldate_as_datetime(sheet.cell_value(r, 0), book.datemode).date().isoformat()
+            value = float(sheet.cell_value(r, 1))
+            if not math.isfinite(value):
+                raise ValueError("Non-finite EIA value")
+            observations.append((date, value))
+        if observations:
+            return sorted(observations)[-5:]
+    raise ValueError("EIA series identity, units or dated observations could not be verified")
 
 
 def eia_rows(captured: str) -> tuple[list[list[Any]], list[str], int]:
-    api_key = os.environ.get("EIA_API_KEY", "").strip()
+    import xlrd
     enabled = [(sid, meta) for sid, meta in EIA_SERIES.items() if meta[4]]
-    if not api_key:
-        return [], ["EIA: missing EIA_API_KEY secret"], len(enabled)
-
-    rows: list[list[Any]] = []
-    errors: list[str] = []
-    for series_id, (label, units, frequency, note, enabled_flag) in enabled:
-        if not enabled_flag:
-            continue
+    rows, errors = [], []
+    for series_id, (label, units, frequency, note, _) in enabled:
         try:
-            url = f"https://api.eia.gov/v2/seriesid/{series_id}"
-            payload = http_get(url, params={"api_key": api_key}).json()
-            data = _eia_data(payload)
-            if not data:
-                raise ValueError("no data returned")
-            data = sorted(data, key=lambda x: str(x.get("period", "")))[-5:]
-            for item in data:
-                period = str(item.get("period", ""))
-                value = item.get("value", "")
-                row_units = str(item.get("units") or item.get("unit") or units)
-                key = f"EIA:{series_id}:{period}:{value}"
+            download, original_url, _ = EIA_DOWNLOADS[series_id]
+            book = xlrd.open_workbook(file_contents=http_get(download).content)
+            for period, value in eia_workbook_observations(book, series_id):
                 rows.append([
-                    captured, "EIA", series_id, label, period, value, row_units, frequency,
-                    "Observation", "US energy", url, key, captured[:10], "Official source",
-                    f"{note}. Context only; electricity series remains disabled pending verification.",
+                    captured, "EIA", series_id, label, period, value, units, frequency,
+                    "Observation", "US energy", original_url,
+                    f"EIA:{series_id}:{period}:Observation", captured[:10], "Verified data",
+                    note + "; source header/category/units/date checked. Context only; electricity remains excluded.",
                 ])
-        except Exception as exc:  # noqa: BLE001
-            errors.append(f"EIA {series_id}: {type(exc).__name__}: {exc}")
+        except Exception as exc:
+            errors.append(f"EIA {series_id}: {type(exc).__name__}")
     return rows, errors, len(enabled)
 
 
@@ -252,7 +295,7 @@ def cftc_rows(captured: str) -> tuple[list[list[Any]], list[str]]:
                     rows.append([
                         captured, "CFTC", code, label, date, _display_number(value), units,
                         "Weekly", measure, market, CFTC_DISAGG_URL,
-                        f"CFTC:{code}:{date}:{measure}", "", "Official source",
+                        f"CFTC:{code}:{date}:{measure}", "", "Verified data",
                         "Positions as of Tuesday; usually released Friday. Delayed crowding context, not an automatic allocation signal. "
                         f"Disaggregated futures and options combined; {contract_units}",
                     ])
@@ -264,8 +307,8 @@ def cftc_rows(captured: str) -> tuple[list[list[Any]], list[str]]:
             for item in _socrata_rows(CFTC_TFF_URL, code):
                 date = str(item.get("report_date_as_yyyy_mm_dd", ""))[:10]
                 market = str(item.get("contract_market_name") or item.get("market_and_exchange_names") or label)
-                long_pos = _number(item, "lev_money_positions_long_all")
-                short_pos = _number(item, "lev_money_positions_short_all")
+                long_pos = _number(item, "lev_money_positions_long_all", "lev_money_positions_long")
+                short_pos = _number(item, "lev_money_positions_short_all", "lev_money_positions_short")
                 open_interest = _number(item, "open_interest_all")
                 if long_pos < 0 or short_pos < 0 or open_interest <= 0:
                     raise ValueError("Invalid CFTC positions")
@@ -282,7 +325,7 @@ def cftc_rows(captured: str) -> tuple[list[list[Any]], list[str]]:
                     rows.append([
                         captured, "CFTC", code, label, date, _display_number(value), units,
                         "Weekly", measure, market, CFTC_TFF_URL,
-                        f"CFTC:{code}:{date}:{measure}", "", "Official source",
+                        f"CFTC:{code}:{date}:{measure}", "", "Verified data",
                         "Positions as of Tuesday; usually released Friday. Delayed crowding context, not an automatic allocation signal. "
                         f"TFF futures and options combined; {contract_units}",
                     ])

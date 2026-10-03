@@ -119,7 +119,7 @@ class Tests(unittest.TestCase):
     def test_weekly_eia_retrieval_uses_weekly_cadence(self):
         weekly = normalize(row(
             sid='NG.NW2_EPG0_SWO_R48_BCF.W',
-            date='2026-09-18',
+            date='2026-09-25',
             value=3351,
             captured='2026-09-25T12:00:00-04:00',
             source='EIA',
@@ -159,6 +159,33 @@ class Tests(unittest.TestCase):
         r[1] = 'CFTC'
         r[2] = 23651
         self.assertEqual(normalize(r)[2], '023651')
+
+    def test_unverified_relay_cannot_be_current(self):
+        raw = row()
+        raw[13] = 'Needs verification'
+        details, err = diagnostics([normalize(raw)], {('FRED', 'A')}, NOW)
+        self.assertTrue(err)
+        self.assertEqual(details['FRED:A']['status'], 'Unverified')
+
+    def test_new_storage_release_required_after_thursday(self):
+        raw = row(sid='NG.NW2_EPG0_SWO_R48_BCF.W', date='2026-09-18', source='EIA', frequency='Weekly')
+        details, err = diagnostics([normalize(raw)], {('EIA', raw[2])}, NOW)
+        self.assertTrue(err)
+        self.assertEqual(details['EIA:' + raw[2]]['normal_latest_due'], '2026-09-25')
+
+    def test_friday_cftc_release_changes_observation_due(self):
+        raw = row(sid='023651', date='2026-09-22', source='CFTC', frequency='Weekly')
+        group = {('CFTC', '023651')}
+        before = datetime(2026, 10, 2, 15, 0, tzinfo=TZ)
+        after = datetime(2026, 10, 2, 16, 0, tzinfo=TZ)
+        self.assertFalse(diagnostics([normalize(raw)], group, before)[1])
+        self.assertTrue(diagnostics([normalize(raw)], group, after)[1])
+
+    def test_monday_cftc_due_is_previous_tuesday(self):
+        raw = row(sid='023651', date='2026-09-29', captured='2026-10-02T18:00:00-04:00', source='CFTC', frequency='Weekly')
+        details, err = diagnostics([normalize(raw)], {('CFTC', '023651')}, datetime(2026, 10, 5, 8, tzinfo=TZ))
+        self.assertFalse(err)
+        self.assertEqual(details['CFTC:023651']['normal_latest_due'], '2026-09-29')
 
 
 if __name__ == '__main__':

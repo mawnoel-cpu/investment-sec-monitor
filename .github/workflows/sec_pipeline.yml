@@ -16,6 +16,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ft-game-sec-writer
+  cancel-in-progress: false
+
 jobs:
   update-sec-data:
     runs-on: ubuntu-latest

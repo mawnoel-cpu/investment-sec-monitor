@@ -13,15 +13,9 @@ from __future__ import annotations
 import json
 import os
 import time
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
-
-import gspread
-import requests
-from google.oauth2.service_account import Credentials
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 
 SPREADSHEET_ID = "1ItUi3uYPK4AvuHQ6PHIZTRvQnVhMiLONefTpVLEzGGE"
 PORTFOLIO_SHEET = "Portfolio"
@@ -44,6 +38,9 @@ SCOPES = [
 
 class SecClient:
     def __init__(self, contact_email: str) -> None:
+        import requests
+        from requests.adapters import HTTPAdapter
+        from urllib3.util.retry import Retry
         if "@" not in contact_email:
             raise ValueError("SEC_CONTACT_EMAIL must be a valid email address")
         self.session = requests.Session()
@@ -75,7 +72,9 @@ class SecClient:
         return response.json()
 
 
-def google_client() -> gspread.Client:
+def google_client() -> Any:
+    import gspread
+    from google.oauth2.service_account import Credentials
     raw = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "")
     if not raw:
         raise RuntimeError("Missing GOOGLE_SERVICE_ACCOUNT_JSON secret")
@@ -84,7 +83,7 @@ def google_client() -> gspread.Client:
     return gspread.authorize(credentials)
 
 
-def portfolio_universe(ws: gspread.Worksheet) -> list[str]:
+def portfolio_universe(ws: Any) -> list[str]:
     values = ws.get("A8:A19")
     tickers: list[str] = []
     for row in values:
@@ -116,34 +115,96 @@ def filing_url(cik: str, accession: str, primary_document: str) -> str:
     return base + primary_document if primary_document else base
 
 
-def existing_keys(ws: gspread.Worksheet) -> set[str]:
+def existing_keys(ws: Any) -> set[str]:
     values = ws.get(f"L8:L{ws.row_count}")
     return {str(row[0]).strip() for row in values if row and str(row[0]).strip()}
 
 
-def first_empty_run_row(ws: gspread.Worksheet) -> int:
-    populated = ws.col_values(16)
-    return max(8, len(populated) + 1)
+def date_serial(value: str | datetime) -> float | str:
+    if not value:
+        return ""
+    parsed = value if isinstance(value, datetime) else datetime.fromisoformat(value)
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(ZoneInfo("America/Toronto")).replace(tzinfo=None)
+    return (parsed - datetime(1899, 12, 30)).total_seconds() / 86400
 
 
-def append_run_log(
-    ws: gspread.Worksheet,
-    status: str,
-    issuers_checked: int,
-    new_filings: int,
-    duplicates: int,
-    failures: int,
-    notes: str,
-) -> None:
+def first_empty_run_row(ws: Any) -> int:
+    values = ws.get(f"P8:P{ws.row_count}", value_render_option="UNFORMATTED_VALUE")
+    for offset in range(max(ws.row_count - 7, 0)):
+        row = values[offset] if offset < len(values) else []
+        if not row or row[0] in ("", None):
+            return 8 + offset
+    return ws.row_count + 1
+
+
+def table_metadata(book, ws):
+    meta = book.fetch_sheet_metadata(params={
+        "fields": "sheets(properties(sheetId,title),tables(tableId,name,range))"
+    })
+    sheet = next(s for s in meta["sheets"] if s["properties"]["sheetId"] == ws.id)
+    return {t["name"]: t for t in sheet.get("tables", [])}
+
+
+def write_filings_verified(book, ws, rows):
+    from ft_macro_coordinator import update
+    table = table_metadata(book, ws)["FTSECFilings"]
+    values = ws.get(f"A8:A{ws.row_count}", value_render_option="UNFORMATTED_VALUE")
+    used = [i + 8 for i, v in enumerate(values) if v and v[0] not in ("", None)]
+    last = max(used, default=7)
+    end = last + len(rows)
+    if end > ws.row_count:
+        ws.add_rows(end - ws.row_count + 25)
+    requests = []
+    if rows:
+        requests.append(update(ws.id, last, 0, rows))
+    region = dict(table["range"])
+    region["endRowIndex"] = max(end, 8)
+    requests.append({"updateTable": {"table": {"tableId": table["tableId"], "range": region}, "fields": "range"}})
+    for column, kind, pattern in ((0, "DATE_TIME", "dd/MM/yyyy HH:mm:ss"), (5, "DATE", "dd/MM/yyyy"), (6, "DATE", "dd/MM/yyyy")):
+        requests.append({"repeatCell": {
+            "range": {"sheetId": ws.id, "startRowIndex": 7, "endRowIndex": max(end, 8),
+                      "startColumnIndex": column, "endColumnIndex": column + 1},
+            "cell": {"userEnteredFormat": {"numberFormat": {"type": kind, "pattern": pattern}}},
+            "fields": "userEnteredFormat.numberFormat",
+        }})
+    book.batch_update({"requests": requests})
+    if rows:
+        got = ws.get(f"A{last + 1}:M{end}", value_render_option="UNFORMATTED_VALUE")
+        if got != rows:
+            raise RuntimeError("SEC filing readback mismatch")
+
+
+def append_run_log(book, ws, status, issuers_checked, new_filings, duplicates, failures, notes):
+    from ft_macro_coordinator import update
     row = first_empty_run_row(ws)
     if row > ws.row_count:
-        ws.add_rows(row - ws.row_count)
-    ws.update(
-        range_name=f"P{row}:V{row}",
-        values=[[datetime.now(ZoneInfo("America/Toronto")).isoformat(), status,
-                 issuers_checked, new_filings, duplicates, failures, notes]],
-        value_input_option="USER_ENTERED",
-    )
+        ws.add_rows(row - ws.row_count + 25)
+    table = table_metadata(book, ws)["FTSECRunLog"]
+    region = dict(table["range"])
+    region["endRowIndex"] = row
+    final = [date_serial(datetime.now(ZoneInfo("America/Toronto"))), status,
+             issuers_checked, new_filings, duplicates, failures, notes]
+    pending = list(final)
+    pending[1] = "Partial"
+    pending[6] = "Write committed; readback pending. " + notes
+    book.batch_update({"requests": [
+        update(ws.id, row - 1, 15, [pending]),
+        {"updateTable": {"table": {"tableId": table["tableId"], "range": region}, "fields": "range"}},
+        {"repeatCell": {
+            "range": {"sheetId": ws.id, "startRowIndex": row - 1, "endRowIndex": row,
+                      "startColumnIndex": 15, "endColumnIndex": 16},
+            "cell": {"userEnteredFormat": {"numberFormat": {"type": "DATE_TIME", "pattern": "dd/MM/yyyy HH:mm:ss"}}},
+            "fields": "userEnteredFormat.numberFormat",
+        }},
+    ]})
+    got = ws.get(f"P{row}:V{row}", value_render_option="UNFORMATTED_VALUE")
+    if not got or got[0] != pending:
+        raise RuntimeError("SEC provisional log readback mismatch")
+    book.batch_update({"requests": [update(ws.id, row - 1, 15, [final])]})
+    got = ws.get(f"P{row}:V{row}", value_render_option="UNFORMATTED_VALUE")
+    if not got or got[0] != final:
+        raise RuntimeError("SEC final log readback mismatch")
 
 
 def main() -> None:
@@ -160,13 +221,18 @@ def main() -> None:
     feed_ws = spreadsheet.worksheet(SEC_FEED_SHEET)
 
     universe = portfolio_universe(portfolio_ws)
-    mapping = ticker_map(sec)
+    try:
+        mapping = ticker_map(sec)
+    except Exception as exc:
+        append_run_log(spreadsheet, feed_ws, "Failure", 0, 0, 0, 1, "SEC issuer mapping unavailable: " + type(exc).__name__)
+        raise RuntimeError("SEC issuer mapping unavailable") from None
     keys = existing_keys(feed_ws)
 
     rows: list[list[Any]] = []
     duplicates = 0
     failures: list[str] = []
     checked = 0
+    successful = 0
     skipped_old = 0
 
     for ft_ticker in universe:
@@ -180,6 +246,7 @@ def main() -> None:
         cik = issuer["cik"]
         try:
             submissions = sec.get_json(f"https://data.sec.gov/submissions/CIK{cik}.json")
+            successful += 1
             recent = submissions.get("filings", {}).get("recent", {})
             forms = recent.get("form", [])
             accessions = recent.get("accessionNumber", [])
@@ -213,13 +280,13 @@ def main() -> None:
                 url = filing_url(cik, accession, primary_doc)
 
                 rows.append([
-                    now.isoformat(),
+                    date_serial(now),
                     ft_ticker,
                     issuer["title"],
                     cik,
                     form,
-                    filing_date,
-                    report_date,
+                    date_serial(filing_date),
+                    date_serial(report_date),
                     accession,
                     description,
                     url,
@@ -229,17 +296,19 @@ def main() -> None:
                 ])
                 keys.add(duplicate_key)
         except Exception as exc:  # noqa: BLE001
-            failures.append(f"{ft_ticker}: {type(exc).__name__}: {exc}")
+            failures.append(f"{ft_ticker}: {type(exc).__name__}")
 
     if rows:
-        feed_ws.append_rows(rows, value_input_option="USER_ENTERED", table_range="A8:M")
+        write_filings_verified(spreadsheet, feed_ws, rows)
+    else:
+        write_filings_verified(spreadsheet, feed_ws, [])
 
-    status = "Success" if not failures else ("Partial" if checked else "Failure")
+    status = "Success" if not failures else ("Partial" if successful else "Failure")
     notes = (
         f"FT Game SEC discovery feed; ignored {skipped_old} pre-game filings. "
         + ("; ".join(failures) if failures else "No issuer failures.")
     )
-    append_run_log(feed_ws, status, checked, len(rows), duplicates, len(failures), notes)
+    append_run_log(spreadsheet, feed_ws, status, checked, len(rows), duplicates, len(failures), notes)
 
     result = {
         "status": status,
