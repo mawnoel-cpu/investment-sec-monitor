@@ -36,7 +36,7 @@ class Sources(unittest.TestCase):
             pipeline.eia_workbook_observations(self.book('U.S. Stocks of Crude Oil Including SPR (Thousand Barrels)'), 'PET.WCESTUS1.W')
 
     def test_fred_missing_observation_is_not_zero(self):
-        data = 'observation_date,BAMLH0A0HYM2\n2026-09-30,.\n2026-10-01,3.24\n'
+        data = '<h1>HY (BAMLH0A0HYM2)</h1> Units: Percent Frequency: Daily <p>2026-09-30: .</p><p>2026-10-01: 3.24</p>'
         with patch.dict(pipeline.FRED_SERIES, {'BAMLH0A0HYM2': ('HY', 'Percent', 'Daily')}, clear=True), patch.object(pipeline, 'http_get', return_value=SimpleNamespace(text=data)):
             rows, errors = pipeline.fred_rows('2026-10-02T20:00:00-04:00')
         self.assertFalse(errors)
@@ -44,6 +44,25 @@ class Sources(unittest.TestCase):
         self.assertEqual(rows[0][5], 3.24)
         self.assertEqual(rows[0][11], 'FRED:BAMLH0A0HYM2:2026-10-01:Observation')
         self.assertEqual(rows[0][13], 'Verified data')
+
+    def test_fred_page_identity_and_units_reject_substitution(self):
+        for text in ('(DFII10) Units: Percent Frequency: Daily 2026-10-01: 3.24', '(BAMLH0A0HYM2) Units: Index Frequency: Daily 2026-10-01: 3.24'):
+            with self.assertRaises(ValueError):
+                pipeline.fred_page_observations(text, 'BAMLH0A0HYM2')
+
+    def test_fred_quarter_is_observation_period_not_release_date(self):
+        text = '(DRTSCILM) Units: Percent Frequency: Quarterly Q3 2026: 0.0 Updated: Aug 3, 2026'
+        self.assertEqual(pipeline.fred_page_observations(text, 'DRTSCILM'), [('2026-07-01', 0.0)])
+
+    def test_eia_storage_dates_and_units(self):
+        text = '<h1>Lower 48 Natural Gas Working Underground Storage (Billion Cubic Feet)</h1><table><tr><td>2026-Sep</td><td>09/18</td><td>3,351</td><td>09/25</td><td>3,415</td></tr></table>'
+        self.assertEqual(pipeline.eia_page_observations(text, 'NG.NW2_EPG0_SWO_R48_BCF.W'), [('2026-09-18', 3351.0), ('2026-09-25', 3415.0)])
+        with self.assertRaises(ValueError):
+            pipeline.eia_page_observations(text.replace('Billion', 'Million'), 'NG.NW2_EPG0_SWO_R48_BCF.W')
+
+    def test_henry_hub_blank_days_are_not_zero_or_shifted(self):
+        text = '<h1>Henry Hub Natural Gas Spot Price (Dollars per Million Btu)</h1><table><tr><td>2026 Sep-28 to Oct- 2</td><td>3.13</td><td>3.18</td><td></td><td></td><td></td></tr></table>'
+        self.assertEqual(pipeline.eia_page_observations(text, 'NG.RNGWHHD.D'), [('2026-09-28', 3.13), ('2026-09-29', 3.18)])
 
     def test_tff_aliases_stay_in_same_report(self):
         self.assertEqual(pipeline._number({'lev_money_positions_long': '12'}, 'lev_money_positions_long_all', 'lev_money_positions_long'), 12)

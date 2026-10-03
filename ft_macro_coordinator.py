@@ -360,7 +360,7 @@ def main():
             "rows_retained": len(rows),
             "readback": "verified before final status",
             "workflow_semantics": "Partial is a successful degraded run; only Failed or write/readback errors fail the workflow.",
-            "upstream": "Direct official FRED CSV, EIA history workbooks and CFTC combined reports; FT workbook only. Other macro writers remain inactive.",
+            "upstream": "Direct official FRED series pages, EIA exact history pages and CFTC combined reports; FT workbook only. Other macro writers remain inactive.",
         },
         ensure_ascii=False,
     )

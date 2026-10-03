@@ -11,7 +11,9 @@ import io
 import json
 import os
 import math
-from datetime import datetime
+import re
+from html.parser import HTMLParser
+from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -139,29 +141,71 @@ def append_run_log(ws: Any, source: str, status: str, series_checked: int, new_r
     )
 
 
+class OfficialPage(HTMLParser):
+    def __init__(self, text):
+        super().__init__()
+        self.text, self.rows, self.row, self.cell = [], [], None, None
+        self.ignored = 0
+        self.feed(text)
+
+    def handle_starttag(self, tag, attrs):
+        if tag in ('script', 'style'):
+            self.ignored += 1
+        if tag == 'tr':
+            self.row = []
+        if tag in ('td', 'th') and self.row is not None:
+            self.cell = []
+
+    def handle_data(self, data):
+        if not self.ignored:
+            self.text.append(data)
+            if self.cell is not None:
+                self.cell.append(data)
+
+    def handle_endtag(self, tag):
+        if tag in ('script', 'style'):
+            self.ignored = max(0, self.ignored - 1)
+        if tag in ('td', 'th') and self.cell is not None:
+            self.row.append(' '.join(' '.join(self.cell).split()))
+            self.cell = None
+        if tag == 'tr' and self.row is not None:
+            self.rows.append(self.row)
+            self.row = None
+
+
+def fred_page_observations(text, series_id):
+    page = OfficialPage(text)
+    text = ' '.join(' '.join(page.text).split())
+    _, units, frequency = FRED_SERIES[series_id]
+    if not re.search(r'\(' + re.escape(series_id) + r'\)', text) or not re.search(r'Units\s*:\s*' + re.escape(units) + r'\b', text) or not re.search(r'Frequency\s*:\s*' + re.escape(frequency) + r'\b', text):
+        raise ValueError('Official FRED series identity, units or frequency mismatch')
+    observations = {}
+    for period, value in re.findall(r'(\d{4}-\d{2}-\d{2})\s*:\s*(-?\d+(?:\.\d+)?)', text):
+        observations[datetime.fromisoformat(period).date().isoformat()] = float(value)
+    # FRED's quarterly display uses Qn YYYY, corresponding to quarter start.
+    if frequency == 'Quarterly':
+        for quarter, year, value in re.findall(r'Q([1-4])\s+(\d{4})\s*:\s*(-?\d+(?:\.\d+)?)', text):
+            observations[f'{year}-{(int(quarter)-1)*3+1:02d}-01'] = float(value)
+    if not observations:
+        raise ValueError('No dated official FRED observations')
+    return sorted(observations.items())[-5:]
+
+
 def fred_rows(captured: str) -> tuple[list[list[Any]], list[str]]:
     rows: list[list[Any]] = []
     errors: list[str] = []
     for series_id, (label, units, frequency) in FRED_SERIES.items():
         try:
-            response = http_get(
-                "https://fred.stlouisfed.org/graph/fredgraph.csv",
-                params={"id": series_id},
-            )
-            parsed = list(csv.DictReader(io.StringIO(response.text)))
-            observations = [
-                item for item in parsed if item.get(series_id) not in (None, "", ".")
-            ][-5:]
-            for item in observations:
-                date = item.get("observation_date") or item.get("DATE") or ""
-                value = item.get(series_id, "")
+            source = f"https://fred.stlouisfed.org/series/{series_id}"
+            observations = fred_page_observations(http_get(source).text, series_id)
+            for date, value in observations:
                 key = f"FRED:{series_id}:{date}:Observation"
                 rows.append([
                     captured, "FRED", series_id, label, date, float(value), units, frequency,
                     "Observation", "US macro/financial conditions",
-                    f"https://fred.stlouisfed.org/series/{series_id}", key,
+                    source, key,
                     captured[:10], "Verified data",
-                    "Context only; review the series and current market regime before using in Evidence.",
+                    "Official series-page identity/units/frequency/dated observations checked. Context only, not a trade signal.",
                 ])
         except Exception as exc:  # noqa: BLE001
             errors.append(f"FRED {series_id}: {type(exc).__name__}")
@@ -218,15 +262,46 @@ def eia_workbook_observations(book, series_id: str) -> list[tuple[str, float]]:
     raise ValueError("EIA series identity, units or dated observations could not be verified")
 
 
+def eia_page_observations(text, series_id):
+    page = OfficialPage(text)
+    identity = ' '.join(' '.join(page.text).lower().split())
+    if not all(token in identity for token in EIA_DOWNLOADS[series_id][2]):
+        raise ValueError('EIA official history category or units mismatch')
+    observations = {}
+    for row in page.rows:
+        if not row:
+            continue
+        label = row[0]
+        if series_id == 'NG.RNGWHHD.D':
+            match = re.match(r'(\d{4})\s+([A-Za-z]{3})-\s*(\d{1,2})\s+to\b', label)
+            if not match:
+                continue
+            year, month, day = match.groups()
+            start = datetime.strptime(f'{year} {month} {day}', '%Y %b %d').date()
+            for offset, value in enumerate(row[1:6]):
+                if re.fullmatch(r'-?\d+(?:\.\d+)?', value):
+                    observations[(start+timedelta(days=offset)).isoformat()] = float(value)
+        else:
+            match = re.match(r'(\d{4})-[A-Za-z]{3}', label)
+            if not match:
+                continue
+            for i in range(1, len(row)-1, 2):
+                period, value = row[i:i+2]
+                if re.fullmatch(r'\d{2}/\d{2}', period) and re.fullmatch(r'\d[\d,]*(?:\.\d+)?', value):
+                    date = datetime.strptime(f'{match.group(1)}/{period}', '%Y/%m/%d').date().isoformat()
+                    observations[date] = float(value.replace(',', ''))
+    if not observations:
+        raise ValueError('No dated EIA official history observations')
+    return sorted(observations.items())[-5:]
+
+
 def eia_rows(captured: str) -> tuple[list[list[Any]], list[str], int]:
-    import xlrd
     enabled = [(sid, meta) for sid, meta in EIA_SERIES.items() if meta[4]]
     rows, errors = [], []
     for series_id, (label, units, frequency, note, _) in enabled:
         try:
-            download, original_url, _ = EIA_DOWNLOADS[series_id]
-            book = xlrd.open_workbook(file_contents=http_get(download).content)
-            for period, value in eia_workbook_observations(book, series_id):
+            _, original_url, _ = EIA_DOWNLOADS[series_id]
+            for period, value in eia_page_observations(http_get(original_url).text, series_id):
                 rows.append([
                     captured, "EIA", series_id, label, period, value, units, frequency,
                     "Observation", "US energy", original_url,
