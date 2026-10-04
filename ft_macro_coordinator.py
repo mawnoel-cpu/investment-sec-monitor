@@ -24,6 +24,25 @@ LOG_HEADERS = [
 ]
 
 
+def validate_destination(book, ws):
+    from feed_validation import validate_destination as validate
+    return validate(book, ws, {
+        "FTMacroObservations": ("A7:O7", DATA_HEADERS, 0),
+        "FTMacroRunLog": ("R7:Y7", LOG_HEADERS, 17),
+    })
+
+
+def cftc_measures(contract):
+    from ft_macro_pipeline import CFTC_COMMODITIES, CFTC_TFF
+    if contract in CFTC_COMMODITIES:
+        prefix = "Managed money"
+    elif contract in CFTC_TFF:
+        prefix = "Leveraged money"
+    else:
+        return set()
+    return {prefix + suffix for suffix in (" long", " short", " net", " net / open interest")} | {"Open interest"}
+
+
 def parse_date(value):
     if isinstance(value, (float, int)):
         return (EPOCH + timedelta(days=value)).replace(tzinfo=TZ)
@@ -85,6 +104,7 @@ def merge_rows(existing, incoming, expected, now):
 
     added = revised = 0
     refreshed = set()
+    validated, collections, invalid_collections = [], {}, set()
     for raw in incoming:
         try:
             row = normalize(raw)
@@ -95,23 +115,56 @@ def merge_rows(existing, incoming, expected, now):
                 or parse_date(row[0]) > now + timedelta(minutes=5)
             ):
                 raise ValueError("Unexpected series or future date")
-            old = merged.get(row[11])
-            if old is None:
-                order.append(row[11])
-                added += 1
-            elif old[1:] != row[1:]:
-                # A newer retrieval timestamp alone is not a data revision.
-                revised += 1
-            merged[row[11]] = row
-            refreshed.add(group)
+            if row[1] == "CFTC":
+                collection = (row[2], row[4])
+                collections.setdefault(collection, []).append(row)
+            else:
+                validated.append(row)
         except (ValueError, TypeError, OverflowError):
             errors.append("A source row failed identity/date/numeric validation")
+            # A malformed measure must also invalidate its contract/date peers.
+            try:
+                if raw[1] == "CFTC":
+                    invalid_collections.add((str(raw[2]).zfill(6), serial(raw[4])))
+            except (IndexError, ValueError, TypeError, OverflowError):
+                pass
+
+    for collection in invalid_collections:
+        collections.setdefault(collection, [])
+
+    for collection, members in collections.items():
+        measures = [r[8] for r in members]
+        required = cftc_measures(collection[0])
+        if (collection in invalid_collections or not required
+                or set(measures) != required or len(measures) != len(required)):
+            errors.append(f"CFTC:{collection[0]}:{parse_date(collection[1]).date()}: incomplete measure collection; prior observations retained")
+            continue
+        validated.extend(members)
+
+    for row in validated:
+        group = (row[1], row[2])
+        old = merged.get(row[11])
+        if old is None:
+            order.append(row[11])
+            added += 1
+        elif old[1:] != row[1:]:
+            # A newer retrieval timestamp alone is not a data revision.
+            revised += 1
+        merged[row[11]] = row
+        refreshed.add(group)
 
     for group in sorted(expected - refreshed):
         errors.append(
             ":".join(group) + ": refresh missing; prior observations retained where available"
         )
     return [merged[key] for key in order], added, revised, refreshed, errors
+
+
+def run_status(refreshed, errors):
+    # An incomplete collection is a degraded run even if it is the only source.
+    if any("incomplete" in error and "CFTC" in error for error in errors):
+        return "Partial"
+    return "Failed" if not refreshed else "Partial" if errors else "Complete"
 
 
 def diagnostics(rows, expected, now):
@@ -123,6 +176,12 @@ def diagnostics(rows, expected, now):
             details[key] = {"status": "Missing"}
             errors.append(key + ": missing observation")
             continue
+        incomplete = False
+        if group[0] == "CFTC":
+            dates = {row[4] for row in found}
+            if any({row[8] for row in found if row[4] == day} != cftc_measures(group[1]) for day in dates):
+                incomplete = True
+                errors.append(key + ": incomplete stored CFTC measure collection")
         latest = max(found, key=lambda row: (row[4], row[0]))
         observation_age = (now.date() - parse_date(latest[4]).date()).days
         retrieval_age = round((now - parse_date(latest[0])).total_seconds() / 3600, 1)
@@ -168,7 +227,7 @@ def diagnostics(rows, expected, now):
             "retrieval_age_hours": retrieval_age,
             "verification": latest[13],
             "normal_latest_due": expected_date.isoformat() if expected_date else None,
-            "status": "Unverified" if unverified else "Stale" if stale else "Current",
+            "status": "Partial" if incomplete else "Unverified" if unverified else "Stale" if stale else "Current",
         }
         if unverified:
             errors.append(key + ": latest observation is not independently verified")
@@ -214,18 +273,7 @@ def first_contiguous_empty_log_row(ws):
 
 
 def write_verified(book, ws, rows, log, log_row):
-    meta = book.fetch_sheet_metadata(
-        params={"fields": "sheets(properties(sheetId,title),tables(tableId,name,range))"}
-    )
-    sheet = next(
-        sheet
-        for sheet in meta["sheets"]
-        if sheet["properties"]["sheetId"] == ws.id
-    )
-    tables = {table["name"]: table for table in sheet.get("tables", [])}
-    required = {"FTMacroObservations", "FTMacroRunLog"}
-    if not required <= tables.keys():
-        raise ValueError("Missing native macro tables")
+    tables = validate_destination(book, ws)
 
     requests = []
     needed = max(7 + len(rows), log_row)
@@ -309,8 +357,7 @@ def main():
 
     book = pipeline.google_client().open_by_key(pipeline.SPREADSHEET_ID)
     ws = book.worksheet(pipeline.MACRO_SHEET)
-    if ws.get("A7:O7")[0] != DATA_HEADERS or ws.get("R7:Y7")[0] != LOG_HEADERS:
-        raise RuntimeError("Macro destination headers mismatch")
+    validate_destination(book, ws)
 
     existing = ws.get(
         f"A8:O{ws.row_count}", value_render_option="UNFORMATTED_VALUE"
@@ -348,7 +395,7 @@ def main():
     errors.extend(merge_errors)
     freshness, age_errors = diagnostics(rows, expected, now)
     errors = list(dict.fromkeys(errors + age_errors))
-    status = "Failed" if not refreshed else "Partial" if errors else "Complete"
+    status = run_status(refreshed, errors)
 
     notes = json.dumps(
         {

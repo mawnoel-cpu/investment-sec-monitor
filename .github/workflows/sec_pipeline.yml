@@ -6,6 +6,11 @@ on:
     branches: [main]
     paths:
       - "ft_sec_pipeline.py"
+      - "ft_macro_coordinator.py"
+      - "ft_macro_pipeline.py"
+      - "feed_validation.py"
+      - "requirements.txt"
+      - "tests/**"
       - ".github/workflows/sec_pipeline.yml"
   schedule:
     # Toronto is UTC-4 through 31 Oct 2026.
@@ -38,7 +43,11 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Run offline regression suite before live write
+        run: python tests/run_offline.py
+
       - name: Update FT Game SEC feed
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           SEC_CONTACT_EMAIL: ${{ secrets.SEC_CONTACT_EMAIL }}

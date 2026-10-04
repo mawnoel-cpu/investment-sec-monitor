@@ -1,0 +1,33 @@
+name: Validate feeds offline
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches: [main]
+    paths:
+      - "**.py"
+      - "requirements.txt"
+      - ".github/workflows/**"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: "pip"
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Compile SEC, macro and shared modules without executing writers
+        run: python -m compileall -q ft_sec_pipeline.py ft_macro_pipeline.py ft_macro_coordinator.py feed_validation.py
+      - name: Run full offline regression suite without credentials or network
+        run: python tests/run_offline.py

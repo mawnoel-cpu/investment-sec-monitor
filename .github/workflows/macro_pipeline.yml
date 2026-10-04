@@ -7,6 +7,7 @@ on:
     paths:
       - "ft_macro_pipeline.py"
       - "ft_macro_coordinator.py"
+      - "feed_validation.py"
       - "tests/test_macro*.py"
       - "requirements.txt"
       - ".github/workflows/macro_pipeline.yml"
@@ -40,8 +41,9 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
       - name: Test preservation, freshness and log readback
-        run: python -m unittest discover -s tests -v
+        run: python tests/run_offline.py
       - name: Update coordinated FT Game macro snapshot
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
         run: python ft_macro_coordinator.py

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from datetime import date, datetime, timedelta
 from typing import Any
@@ -22,6 +23,22 @@ PORTFOLIO_SHEET = "Portfolio"
 SEC_FEED_SHEET = "SEC Feed"
 GAME_START = date(2026, 9, 1)
 GAME_END = datetime(2026, 11, 27, 23, 59, 59, tzinfo=ZoneInfo("America/Toronto"))
+
+DATA_HEADERS = [
+    "Captured at", "FT ticker", "SEC issuer", "CIK", "Form", "Filed",
+    "Report period", "Accession", "Description", "Original URL",
+    "Document state", "Duplicate key", "Coverage note",
+]
+LOG_HEADERS = ["Run at", "Status", "Issuers checked", "New filings", "Duplicates", "Failures", "Notes"]
+
+
+def validate_destination(book, ws):
+    from feed_validation import validate_destination as validate
+    return validate(book, ws, {
+        "FTSECFilings": ("A7:M7", DATA_HEADERS, 0),
+        "FTSECRunLog": ("P7:V7", LOG_HEADERS, 15),
+    })
+
 
 RELEVANT_FORMS = {
     "10-K", "10-K/A", "10-Q", "10-Q/A", "8-K", "8-K/A",
@@ -84,6 +101,21 @@ def google_client() -> Any:
 
 
 def portfolio_universe(ws: Any) -> list[str]:
+    if ws.get("A7:D7") != [["Ticker", "Company", "Current", "Queued target"]]:
+        raise ValueError("Portfolio headers mismatch at A7:D7")
+    # Summary/rules below the supported holdings block must not hide new holdings.
+    summaries = {20: "TOTAL", 21: "Weight check", 22: "Holdings", 23: "Position cap"}
+    outside = ws.get(f"A20:D{ws.row_count}", value_render_option="UNFORMATTED_VALUE")
+    for number, row in enumerate(outside, 20):
+        ticker = str(row[0]).strip() if row and row[0] is not None else ""
+        if not ticker or summaries.get(number) == ticker:
+            continue
+        weights = row[2:4]
+        weighted = any(isinstance(v, (int, float)) and not isinstance(v, bool) for v in weights)
+        ticker_only = (re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.^/:-]*", ticker)
+                       and not any(v not in ("", None) for v in weights))
+        if weighted or ticker_only:
+            raise ValueError(f"Portfolio holding outside supported A8:A19 range at row {number}")
     values = ws.get("A8:A19")
     tickers: list[str] = []
     for row in values:
@@ -92,6 +124,8 @@ def portfolio_universe(ws: Any) -> list[str]:
         ticker = str(row[0]).strip()
         if ticker and ticker.upper() != "TOTAL":
             tickers.append(ticker)
+    if not tickers:
+        raise ValueError("Unexpectedly empty SEC portfolio universe at A8:A19")
     return tickers
 
 
@@ -138,17 +172,9 @@ def first_empty_run_row(ws: Any) -> int:
     return ws.row_count + 1
 
 
-def table_metadata(book, ws):
-    meta = book.fetch_sheet_metadata(params={
-        "fields": "sheets(properties(sheetId,title),tables(tableId,name,range))"
-    })
-    sheet = next(s for s in meta["sheets"] if s["properties"]["sheetId"] == ws.id)
-    return {t["name"]: t for t in sheet.get("tables", [])}
-
-
 def write_filings_verified(book, ws, rows):
     from ft_macro_coordinator import update
-    table = table_metadata(book, ws)["FTSECFilings"]
+    table = validate_destination(book, ws)["FTSECFilings"]
     values = ws.get(f"A8:A{ws.row_count}", value_render_option="UNFORMATTED_VALUE")
     used = [i + 8 for i, v in enumerate(values) if v and v[0] not in ("", None)]
     last = max(used, default=7)
@@ -177,10 +203,10 @@ def write_filings_verified(book, ws, rows):
 
 def append_run_log(book, ws, status, issuers_checked, new_filings, duplicates, failures, notes):
     from ft_macro_coordinator import update
+    table = validate_destination(book, ws)["FTSECRunLog"]
     row = first_empty_run_row(ws)
     if row > ws.row_count:
         ws.add_rows(row - ws.row_count + 25)
-    table = table_metadata(book, ws)["FTSECRunLog"]
     region = dict(table["range"])
     region["endRowIndex"] = row
     final = [date_serial(datetime.now(ZoneInfo("America/Toronto"))), status,
@@ -220,6 +246,7 @@ def main() -> None:
     portfolio_ws = spreadsheet.worksheet(PORTFOLIO_SHEET)
     feed_ws = spreadsheet.worksheet(SEC_FEED_SHEET)
 
+    validate_destination(spreadsheet, feed_ws)
     universe = portfolio_universe(portfolio_ws)
     try:
         mapping = ticker_map(sec)
