@@ -185,6 +185,30 @@ class OfficialPage(HTMLParser):
 
 
 FRED_CSV_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv"
+FRED_API_URL = "https://api.stlouisfed.org/fred/series/observations"
+
+
+def fred_api_observations(payload, series_id):
+    """Parse an authenticated official FRED API observation response."""
+    if not isinstance(payload, dict) or payload.get("error_code"):
+        raise ValueError("Official FRED API returned an error payload")
+    observations = {}
+    for item in payload.get("observations", []):
+        if not isinstance(item, dict):
+            continue
+        period = str(item.get("date", "") or "").strip()
+        raw_value = str(item.get("value", "") or "").strip()
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", period) or raw_value in {"", "."}:
+            continue
+        try:
+            value = float(raw_value)
+        except ValueError:
+            continue
+        if math.isfinite(value):
+            observations[period] = value
+    if not observations:
+        raise ValueError("No dated official FRED API observations")
+    return sorted(observations.items())[-5:]
 
 
 def fred_csv_observations(text, series_id):
@@ -238,21 +262,44 @@ def fred_page_observations(text, series_id):
 def fred_rows(captured: str) -> tuple[list[list[Any]], list[str]]:
     rows: list[list[Any]] = []
     errors: list[str] = []
+    api_key = os.environ.get("FRED_API_KEY", "").strip()
+
     for series_id, (label, units, frequency) in FRED_SERIES.items():
         source = f"https://fred.stlouisfed.org/series/{series_id}"
         csv_source = FRED_CSV_URL + "?id=" + series_id
         try:
-            method = "official CSV"
-            try:
-                observations = fred_csv_observations(http_get(csv_source).text, series_id)
-            except Exception as csv_exc:  # noqa: BLE001
-                method = "series-page fallback"
+            observations = None
+            method = ""
+
+            if api_key:
                 try:
-                    observations = fred_page_observations(http_get(source).text, series_id)
-                except Exception as page_exc:  # noqa: BLE001
-                    raise RuntimeError(
-                        f"CSV {type(csv_exc).__name__}; page {type(page_exc).__name__}"
-                    ) from page_exc
+                    response = http_get(
+                        FRED_API_URL,
+                        params={
+                            "series_id": series_id,
+                            "api_key": api_key,
+                            "file_type": "json",
+                            "sort_order": "desc",
+                            "limit": 5,
+                        },
+                    )
+                    observations = fred_api_observations(response.json(), series_id)
+                    method = "API"
+                except Exception:  # noqa: BLE001
+                    observations = None
+
+            if observations is None:
+                try:
+                    observations = fred_csv_observations(http_get(csv_source).text, series_id)
+                    method = "CSV"
+                except Exception as csv_exc:  # noqa: BLE001
+                    try:
+                        observations = fred_page_observations(http_get(source).text, series_id)
+                        method = "series-page fallback"
+                    except Exception as page_exc:  # noqa: BLE001
+                        raise RuntimeError(
+                            f"CSV {type(csv_exc).__name__}; page {type(page_exc).__name__}"
+                        ) from page_exc
 
             for date, value in observations:
                 key = f"FRED:{series_id}:{date}:Observation"
@@ -265,7 +312,11 @@ def fred_rows(captured: str) -> tuple[list[list[Any]], list[str]]:
                     "Configured units/frequency retained. Context only, not a trade signal.",
                 ])
         except Exception as exc:  # noqa: BLE001
-            errors.append(f"FRED {series_id}: {type(exc).__name__}")
+            detail = " ".join(str(exc).split())[:180]
+            errors.append(
+                f"FRED {series_id}: {type(exc).__name__}"
+                + (f": {detail}" if detail else "")
+            )
     return rows, errors
 
 
