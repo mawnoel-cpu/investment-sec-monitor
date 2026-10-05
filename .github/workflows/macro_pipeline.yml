@@ -43,7 +43,7 @@ jobs:
       - name: Test preservation, freshness and log readback
         run: python tests/run_offline.py
       - name: Update coordinated FT Game macro snapshot
-        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.event_name == 'push'
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
         run: python ft_macro_coordinator.py
