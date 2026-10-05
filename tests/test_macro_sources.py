@@ -36,7 +36,7 @@ class Sources(unittest.TestCase):
             pipeline.eia_workbook_observations(self.book('U.S. Stocks of Crude Oil Including SPR (Thousand Barrels)'), 'PET.WCESTUS1.W')
 
     def test_fred_missing_observation_is_not_zero(self):
-        data = '<h1>HY (BAMLH0A0HYM2)</h1> Units: Percent Frequency: Daily <p>2026-09-30: .</p><p>2026-10-01: 3.24</p>'
+        data = 'DATE,BAMLH0A0HYM2\n2026-09-30,.\n2026-10-01,3.24\n'
         with patch.dict(pipeline.FRED_SERIES, {'BAMLH0A0HYM2': ('HY', 'Percent', 'Daily')}, clear=True), patch.object(pipeline, 'http_get', return_value=SimpleNamespace(text=data)):
             rows, errors = pipeline.fred_rows('2026-10-02T20:00:00-04:00')
         self.assertFalse(errors)
@@ -44,6 +44,26 @@ class Sources(unittest.TestCase):
         self.assertEqual(rows[0][5], 3.24)
         self.assertEqual(rows[0][11], 'FRED:BAMLH0A0HYM2:2026-10-01:Observation')
         self.assertEqual(rows[0][13], 'Verified data')
+        self.assertIn('official CSV', rows[0][14])
+
+    def test_fred_csv_requires_exact_series_identity(self):
+        with self.assertRaises(ValueError):
+            pipeline.fred_csv_observations(
+                'DATE,DFII10\n2026-10-01,2.88\n',
+                'BAMLH0A0HYM2',
+            )
+
+    def test_fred_html_fallback_remains_available(self):
+        html = '<h1>HY (BAMLH0A0HYM2)</h1> Units: Percent Frequency: Daily <p>2026-10-01: 3.24</p>'
+        responses = [
+            RuntimeError('csv unavailable'),
+            SimpleNamespace(text=html),
+        ]
+        with patch.dict(pipeline.FRED_SERIES, {'BAMLH0A0HYM2': ('HY', 'Percent', 'Daily')}, clear=True), patch.object(pipeline, 'http_get', side_effect=responses):
+            rows, errors = pipeline.fred_rows('2026-10-02T20:00:00-04:00')
+        self.assertFalse(errors)
+        self.assertEqual(rows[0][5], 3.24)
+        self.assertIn('series-page fallback', rows[0][14])
 
     def test_fred_page_identity_and_units_reject_substitution(self):
         for text in ('(DFII10) Units: Percent Frequency: Daily 2026-10-01: 3.24', '(BAMLH0A0HYM2) Units: Index Frequency: Daily 2026-10-01: 3.24'):
