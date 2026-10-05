@@ -56,7 +56,7 @@ class Sources(unittest.TestCase):
         with patch.dict(pipeline.FRED_SERIES, {'BAMLH0A0HYM2': ('HY', 'Percent', 'Daily')}, clear=True), patch.dict(pipeline.os.environ, {'FRED_API_KEY': 'test-key'}, clear=False), patch.object(pipeline, 'http_get', return_value=response) as get:
             rows, errors = pipeline.fred_rows('2026-10-05T16:00:00-04:00')
         self.assertFalse(errors)
-        self.assertEqual([row[5] for row in rows], [3.1, 3.24])
+        self.assertEqual([row[5] for row in rows], [3.24, 3.1])
         self.assertTrue(all('Official FRED API' in row[14] for row in rows))
         self.assertEqual(get.call_args.kwargs['params']['series_id'], 'BAMLH0A0HYM2')
         self.assertEqual(get.call_args.kwargs['params']['api_key'], 'test-key')
