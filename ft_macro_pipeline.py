@@ -84,15 +84,26 @@ def http_get(url: str, *, params: dict[str, Any] | None = None):
     from urllib3.util.retry import Retry
 
     session = requests.Session()
-    session.mount("https://", HTTPAdapter(max_retries=Retry(
-        total=1, backoff_factor=1, status_forcelist=(429, 500, 502, 503, 504),
-        allowed_methods=frozenset({"GET"}), respect_retry_after_header=True,
-    )))
+    retry = Retry(
+        total=4,
+        connect=4,
+        read=4,
+        status=4,
+        backoff_factor=1.5,
+        status_forcelist=(408, 425, 429, 500, 502, 503, 504),
+        allowed_methods=frozenset({"GET"}),
+        respect_retry_after_header=True,
+        raise_on_status=False,
+    )
+    session.mount("https://", HTTPAdapter(max_retries=retry))
     response = session.get(
         url,
         params=params,
-        timeout=(10, 20),
-        headers={"User-Agent": "FT Game Intelligence Macro Monitor/1.0"},
+        timeout=(15, 30),
+        headers={
+            "User-Agent": "FT Game Intelligence Macro Monitor/1.1",
+            "Accept": "text/csv,text/plain,text/html,application/json;q=0.9,*/*;q=0.8",
+        },
     )
     response.raise_for_status()
     return response
@@ -173,6 +184,39 @@ class OfficialPage(HTMLParser):
             self.row = None
 
 
+FRED_CSV_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv"
+
+
+def fred_csv_observations(text, series_id):
+    """Parse FRED's official CSV export and require the requested series ID."""
+    reader = csv.DictReader(io.StringIO(text))
+    if not reader.fieldnames or series_id not in reader.fieldnames:
+        raise ValueError("Official FRED CSV series identity mismatch")
+
+    date_field = next(
+        (name for name in reader.fieldnames if str(name).strip().lower() in {"date", "observation_date"}),
+        reader.fieldnames[0],
+    )
+    observations = {}
+    for row in reader:
+        period = str(row.get(date_field, "") or "").strip()
+        raw_value = str(row.get(series_id, "") or "").strip()
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", period):
+            continue
+        if raw_value in {"", "."}:
+            continue
+        try:
+            value = float(raw_value)
+        except ValueError:
+            continue
+        if math.isfinite(value):
+            observations[period] = value
+
+    if not observations:
+        raise ValueError("No dated official FRED CSV observations")
+    return sorted(observations.items())[-5:]
+
+
 def fred_page_observations(text, series_id):
     page = OfficialPage(text)
     text = ' '.join(' '.join(page.text).split())
@@ -195,9 +239,21 @@ def fred_rows(captured: str) -> tuple[list[list[Any]], list[str]]:
     rows: list[list[Any]] = []
     errors: list[str] = []
     for series_id, (label, units, frequency) in FRED_SERIES.items():
+        source = f"https://fred.stlouisfed.org/series/{series_id}"
+        csv_source = FRED_CSV_URL + "?id=" + series_id
         try:
-            source = f"https://fred.stlouisfed.org/series/{series_id}"
-            observations = fred_page_observations(http_get(source).text, series_id)
+            method = "official CSV"
+            try:
+                observations = fred_csv_observations(http_get(csv_source).text, series_id)
+            except Exception as csv_exc:  # noqa: BLE001
+                method = "series-page fallback"
+                try:
+                    observations = fred_page_observations(http_get(source).text, series_id)
+                except Exception as page_exc:  # noqa: BLE001
+                    raise RuntimeError(
+                        f"CSV {type(csv_exc).__name__}; page {type(page_exc).__name__}"
+                    ) from page_exc
+
             for date, value in observations:
                 key = f"FRED:{series_id}:{date}:Observation"
                 rows.append([
@@ -205,7 +261,8 @@ def fred_rows(captured: str) -> tuple[list[list[Any]], list[str]]:
                     "Observation", "US macro/financial conditions",
                     source, key,
                     captured[:10], "Verified data",
-                    "Official series-page identity/units/frequency/dated observations checked. Context only, not a trade signal.",
+                    f"Official FRED {method}; exact series ID and dated values checked. "
+                    "Configured units/frequency retained. Context only, not a trade signal.",
                 ])
         except Exception as exc:  # noqa: BLE001
             errors.append(f"FRED {series_id}: {type(exc).__name__}")
