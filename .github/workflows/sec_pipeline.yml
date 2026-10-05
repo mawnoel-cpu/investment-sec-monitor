@@ -6,11 +6,10 @@ on:
     branches: [main]
     paths:
       - "ft_sec_pipeline.py"
-      - "ft_macro_coordinator.py"
-      - "ft_macro_pipeline.py"
       - "feed_validation.py"
       - "requirements.txt"
-      - "tests/**"
+      - "tests/test_sec_pipeline.py"
+      - "tests/run_offline.py"
       - ".github/workflows/sec_pipeline.yml"
   schedule:
     # Toronto is UTC-4 through 31 Oct 2026.
