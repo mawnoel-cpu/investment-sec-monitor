@@ -44,7 +44,7 @@ class Sources(unittest.TestCase):
         self.assertEqual(rows[0][5], 3.24)
         self.assertEqual(rows[0][11], 'FRED:BAMLH0A0HYM2:2026-10-01:Observation')
         self.assertEqual(rows[0][13], 'Verified data')
-        self.assertIn('official CSV', rows[0][14])
+        self.assertIn('official fred csv', rows[0][14].lower())
 
     def test_fred_authenticated_api_is_preferred_when_key_is_available(self):
         response = SimpleNamespace(
