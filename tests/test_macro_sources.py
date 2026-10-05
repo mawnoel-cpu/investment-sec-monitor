@@ -37,7 +37,7 @@ class Sources(unittest.TestCase):
 
     def test_fred_missing_observation_is_not_zero(self):
         data = 'DATE,BAMLH0A0HYM2\n2026-09-30,.\n2026-10-01,3.24\n'
-        with patch.dict(pipeline.FRED_SERIES, {'BAMLH0A0HYM2': ('HY', 'Percent', 'Daily')}, clear=True), patch.object(pipeline, 'http_get', return_value=SimpleNamespace(text=data)):
+        with patch.dict(pipeline.FRED_SERIES, {'BAMLH0A0HYM2': ('HY', 'Percent', 'Daily')}, clear=True), patch.dict(pipeline.os.environ, {'FRED_API_KEY': ''}, clear=False), patch.object(pipeline, 'http_get', return_value=SimpleNamespace(text=data)):
             rows, errors = pipeline.fred_rows('2026-10-02T20:00:00-04:00')
         self.assertFalse(errors)
         self.assertEqual(len(rows), 1)
@@ -45,6 +45,31 @@ class Sources(unittest.TestCase):
         self.assertEqual(rows[0][11], 'FRED:BAMLH0A0HYM2:2026-10-01:Observation')
         self.assertEqual(rows[0][13], 'Verified data')
         self.assertIn('official CSV', rows[0][14])
+
+    def test_fred_authenticated_api_is_preferred_when_key_is_available(self):
+        response = SimpleNamespace(
+            json=lambda: {'observations': [
+                {'date': '2026-10-02', 'value': '3.10'},
+                {'date': '2026-10-01', 'value': '3.24'},
+            ]}
+        )
+        with patch.dict(pipeline.FRED_SERIES, {'BAMLH0A0HYM2': ('HY', 'Percent', 'Daily')}, clear=True), patch.dict(pipeline.os.environ, {'FRED_API_KEY': 'test-key'}, clear=False), patch.object(pipeline, 'http_get', return_value=response) as get:
+            rows, errors = pipeline.fred_rows('2026-10-05T16:00:00-04:00')
+        self.assertFalse(errors)
+        self.assertEqual([row[5] for row in rows], [3.1, 3.24])
+        self.assertTrue(all('Official FRED API' in row[14] for row in rows))
+        self.assertEqual(get.call_args.kwargs['params']['series_id'], 'BAMLH0A0HYM2')
+        self.assertEqual(get.call_args.kwargs['params']['api_key'], 'test-key')
+
+    def test_fred_api_parser_skips_missing_values(self):
+        rows = pipeline.fred_api_observations(
+            {'observations': [
+                {'date': '2026-10-01', 'value': '.'},
+                {'date': '2026-10-02', 'value': '3.10'},
+            ]},
+            'BAMLH0A0HYM2',
+        )
+        self.assertEqual(rows, [('2026-10-02', 3.10)])
 
     def test_fred_csv_requires_exact_series_identity(self):
         with self.assertRaises(ValueError):
@@ -59,7 +84,7 @@ class Sources(unittest.TestCase):
             RuntimeError('csv unavailable'),
             SimpleNamespace(text=html),
         ]
-        with patch.dict(pipeline.FRED_SERIES, {'BAMLH0A0HYM2': ('HY', 'Percent', 'Daily')}, clear=True), patch.object(pipeline, 'http_get', side_effect=responses):
+        with patch.dict(pipeline.FRED_SERIES, {'BAMLH0A0HYM2': ('HY', 'Percent', 'Daily')}, clear=True), patch.dict(pipeline.os.environ, {'FRED_API_KEY': ''}, clear=False), patch.object(pipeline, 'http_get', side_effect=responses):
             rows, errors = pipeline.fred_rows('2026-10-02T20:00:00-04:00')
         self.assertFalse(errors)
         self.assertEqual(rows[0][5], 3.24)
