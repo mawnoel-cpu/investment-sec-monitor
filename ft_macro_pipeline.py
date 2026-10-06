@@ -83,12 +83,24 @@ def http_get(url: str, *, params: dict[str, Any] | None = None):
     from requests.adapters import HTTPAdapter
     from urllib3.util.retry import Retry
 
+    from urllib.parse import urlsplit
+
+    class BoundedRetry(Retry):
+        def get_retry_after(self, response):
+            delay = super().get_retry_after(response)
+            return min(delay, 15) if delay is not None else None
+
+    # Six FRED series may try API, CSV and HTML in sequence. Give failed
+    # routes a bounded retry budget so the coordinator can still save its log.
+    fred = urlsplit(url).hostname in {"fred.stlouisfed.org", "api.stlouisfed.org"}
+    attempts = 1 if fred else 4
     session = requests.Session()
-    retry = Retry(
-        total=4,
-        connect=4,
-        read=4,
-        status=4,
+    session.max_redirects = 3
+    retry = BoundedRetry(
+        total=attempts,
+        connect=attempts,
+        read=attempts,
+        status=attempts,
         backoff_factor=1.5,
         status_forcelist=(408, 425, 429, 500, 502, 503, 504),
         allowed_methods=frozenset({"GET"}),
@@ -99,7 +111,7 @@ def http_get(url: str, *, params: dict[str, Any] | None = None):
     response = session.get(
         url,
         params=params,
-        timeout=(15, 30),
+        timeout=(10, 20) if fred else (15, 30),
         headers={
             "User-Agent": "FT Game Intelligence Macro Monitor/1.1",
             "Accept": "text/csv,text/plain,text/html,application/json;q=0.9,*/*;q=0.8",
