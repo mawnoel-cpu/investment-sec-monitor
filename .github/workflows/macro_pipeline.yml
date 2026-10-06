@@ -48,3 +48,5 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
         run: python ft_macro_coordinator.py
+
+# Validation rerun marker: 2026-10-05
