@@ -13,7 +13,7 @@ class OfflineValidationTests(unittest.TestCase):
     def test_runner_removes_credentials_and_blocks_network(self):
         class Probe(unittest.TestCase):
             def runTest(self):
-                for name in ('GOOGLE_SERVICE_ACCOUNT_JSON', 'SEC_CONTACT_EMAIL', 'GOOGLE_APPLICATION_CREDENTIALS'):
+                for name in ('GOOGLE_SERVICE_ACCOUNT_JSON', 'SEC_CONTACT_EMAIL', 'GOOGLE_APPLICATION_CREDENTIALS', 'GH_SIGNAL_TOKEN'):
                     self.assertNotIn(name, os.environ)
                 with self.assertRaisesRegex(AssertionError, 'Offline validation'):
                     socket.create_connection(('example.invalid', 443))
@@ -36,9 +36,20 @@ class OfflineValidationTests(unittest.TestCase):
         self.assertIn('pip install -r requirements.txt', text)
         self.assertIn('python tests/run_offline.py', text)
         self.assertNotIn('secrets.', text)
-        for module in ('ft_sec_pipeline.py', 'ft_macro_coordinator.py', 'ft_macro_pipeline.py', 'feed_validation.py'):
+        for module in ('ft_sec_pipeline.py', 'ft_macro_coordinator.py', 'ft_macro_pipeline.py', 'ft_github_signal_pipeline.py', 'ft_github_signal_writer.py', 'feed_validation.py'):
             self.assertIn(module, text)
             self.assertNotIn('run: python ' + module, text)
+
+    def test_github_writer_is_schedule_or_manual_only(self):
+        text = (ROOT / '.github/workflows/github_signal_pipeline.yml').read_text()
+        guard = "if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'"
+        self.assertIn('python tests/run_offline.py', text)
+        self.assertIn('run: python ft_github_signal_pipeline.py --dry-run', text)
+        self.assertIn('run: python ft_github_signal_writer.py', text)
+        writer_index = text.index('run: python ft_github_signal_writer.py')
+        step = text[text.rfind('      - name:', 0, writer_index):]
+        self.assertIn(guard, step)
+        self.assertLess(text.index('python tests/run_offline.py'), writer_index)
 
     def test_live_steps_are_gated_and_follow_offline_tests(self):
         guard = "if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'"
