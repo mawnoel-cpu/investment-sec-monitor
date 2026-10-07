@@ -271,10 +271,33 @@ def fred_page_observations(text, series_id):
     return sorted(observations.items())[-5:]
 
 
+def safe_transport_error(exc):
+    """Report exception types/status/errno without URLs, credentials or response text."""
+    pending, seen, details = [exc], set(), []
+    while pending and len(details) < 8:
+        item = pending.pop(0)
+        if id(item) in seen:
+            continue
+        seen.add(id(item))
+        detail = type(item).__name__
+        errno = getattr(item, "errno", None)
+        status = getattr(getattr(item, "response", None), "status_code", None)
+        if isinstance(errno, int):
+            detail += f"(errno={errno})"
+        if isinstance(status, int):
+            detail += f"(HTTP={status})"
+        details.append(detail)
+        for nested in (getattr(item, "reason", None), item.__cause__, item.__context__, *item.args):
+            if isinstance(nested, BaseException):
+                pending.append(nested)
+    return ">".join(details)
+
+
 def fred_rows(captured: str) -> tuple[list[list[Any]], list[str]]:
     rows: list[list[Any]] = []
     errors: list[str] = []
     api_key = os.environ.get("FRED_API_KEY", "").strip()
+    print(json.dumps({"source": "FRED", "api_key_configured": bool(api_key)}))
 
     for series_id, (label, units, frequency) in FRED_SERIES.items():
         source = f"https://fred.stlouisfed.org/series/{series_id}"
@@ -282,6 +305,7 @@ def fred_rows(captured: str) -> tuple[list[list[Any]], list[str]]:
         try:
             observations = None
             method = ""
+            api_diagnostic = "API skipped (key absent)"
 
             if api_key:
                 try:
@@ -297,7 +321,8 @@ def fred_rows(captured: str) -> tuple[list[list[Any]], list[str]]:
                     )
                     observations = fred_api_observations(response.json(), series_id)
                     method = "API"
-                except Exception:  # noqa: BLE001
+                except Exception as api_exc:  # noqa: BLE001
+                    api_diagnostic = "API " + safe_transport_error(api_exc)
                     observations = None
 
             if observations is None:
@@ -310,7 +335,8 @@ def fred_rows(captured: str) -> tuple[list[list[Any]], list[str]]:
                         method = "series-page fallback"
                     except Exception as page_exc:  # noqa: BLE001
                         raise RuntimeError(
-                            f"CSV {type(csv_exc).__name__}; page {type(page_exc).__name__}"
+                            f"{api_diagnostic}; CSV {safe_transport_error(csv_exc)}; "
+                            f"page {safe_transport_error(page_exc)}"
                         ) from page_exc
 
             for date, value in observations:
@@ -324,7 +350,7 @@ def fred_rows(captured: str) -> tuple[list[list[Any]], list[str]]:
                     "Configured units/frequency retained. Context only, not a trade signal.",
                 ])
         except Exception as exc:  # noqa: BLE001
-            detail = " ".join(str(exc).split())[:180]
+            detail = " ".join(str(exc).split())[:600]
             errors.append(
                 f"FRED {series_id}: {type(exc).__name__}"
                 + (f": {detail}" if detail else "")
