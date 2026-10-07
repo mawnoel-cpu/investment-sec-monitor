@@ -82,7 +82,8 @@ WATCHLIST = [
 CONTEXT_NOTE = (
     "Discovery/context only; GitHub activity is not financial evidence or a trade signal. "
     "Material anomalies require verification against company disclosures, research, catalysts "
-    "and price behaviour. Counts may include documentation, maintenance and security-response work."
+    "and price behaviour. Counts may include documentation, maintenance and security-response work. "
+    "Capped activity means at least one 100-item API sample is incomplete."
 )
 
 
@@ -243,6 +244,9 @@ def collect_repository(
     previous_weekly = max(c28 - c7, 0) / 3
     ratio = round(c7 / previous_weekly, 2) if previous_weekly >= 1 else None
 
+    commit_capped = len(commits) >= MAX_PAGE
+    any_capped = commit_capped or len(issues) >= MAX_PAGE or len(releases) >= MAX_PAGE
+
     return {
         "captured_at": now.astimezone(TORONTO).isoformat(),
         "ticker": item["ticker"],
@@ -267,8 +271,8 @@ def collect_repository(
         "pushed_at": str(meta.get("pushed_at") or ""),
         "discussions_available": bool(meta.get("has_discussions")),
         "archived": bool(meta.get("archived")),
-        "activity_capped": len(commits) >= MAX_PAGE or len(issues) >= MAX_PAGE or len(releases) >= MAX_PAGE,
-        "activity_state": activity_state(c7, c28, releases_7d),
+        "activity_capped": any_capped,
+        "activity_state": "Capped" if commit_capped else activity_state(c7, c28, releases_7d),
         "verification": "Curated official/company-controlled public repository",
         "context": CONTEXT_NOTE,
     }

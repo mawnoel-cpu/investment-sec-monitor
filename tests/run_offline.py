@@ -16,7 +16,7 @@ def deny_network(*args, **kwargs):
 
 def main():
     with patch.dict(os.environ):
-        for name in ("GOOGLE_SERVICE_ACCOUNT_JSON", "SEC_CONTACT_EMAIL", "GOOGLE_APPLICATION_CREDENTIALS"):
+        for name in ("GOOGLE_SERVICE_ACCOUNT_JSON", "SEC_CONTACT_EMAIL", "GOOGLE_APPLICATION_CREDENTIALS", "GH_SIGNAL_TOKEN"):
             os.environ.pop(name, None)
         with patch.object(socket.socket, "connect", deny_network), \
                 patch.object(socket.socket, "connect_ex", deny_network), \

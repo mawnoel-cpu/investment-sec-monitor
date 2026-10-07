@@ -103,6 +103,30 @@ class Tests(unittest.TestCase):
         self.assertEqual(activity_state(3, 12, 0), "Normal")
         self.assertEqual(activity_state(2, 23, 0), "Slowing")
 
+    def test_commit_cap_prevents_false_acceleration_label(self):
+        item = {
+            "ticker": "TEST",
+            "company": "Example",
+            "repository": "Example/repo",
+            "role": "Test role",
+        }
+
+        class CappedClient(FakeClient):
+            def get_json(self, path, **kwargs):
+                if path.endswith("/commits"):
+                    return [
+                        {
+                            "commit": {"committer": {"date": iso(1)}},
+                            "author": {"login": f"dev{n}", "type": "User"},
+                        }
+                        for n in range(100)
+                    ]
+                return super().get_json(path, **kwargs)
+
+        row = collect_repository(CappedClient(), item, NOW)
+        self.assertTrue(row["activity_capped"])
+        self.assertEqual(row["activity_state"], "Capped")
+
     def test_partial_run_preserves_successful_repositories(self):
         import ft_github_signal_pipeline as pipeline
 
