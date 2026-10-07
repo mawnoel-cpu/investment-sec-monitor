@@ -293,6 +293,34 @@ def safe_transport_error(exc):
     return ">".join(details)
 
 
+def fred_api_rejection(exc):
+    """Classify official JSON errors without logging any server-supplied text."""
+    response = getattr(exc, "response", None)
+    if response is None:
+        return ""
+    try:
+        payload = response.json()
+    except (ValueError, TypeError):
+        return "rejection body unavailable/non-JSON"
+    if not isinstance(payload, dict):
+        return "rejection body has unexpected shape"
+    message = str(payload.get("error_message", "")).lower()
+    if "api_key" in message or "api key" in message:
+        if "not registered" in message or "not valid" in message or "invalid" in message:
+            return "FRED rejects API key as invalid or unregistered"
+        if "32" in message or "alpha-numeric" in message or "alphanumeric" in message:
+            return "FRED rejects API key format (requires 32 alphanumeric characters)"
+        if "not set" in message or "missing" in message or "required" in message:
+            return "FRED reports API key missing"
+        return "FRED rejects API key parameter"
+    for parameter in ("series_id", "file_type", "sort_order", "limit"):
+        if parameter in message:
+            return "FRED rejects request parameter " + parameter
+    if "too many" in message or "rate limit" in message:
+        return "FRED reports rate limit"
+    return "FRED rejection reason not recognized; raw response withheld"
+
+
 def fred_rows(captured: str) -> tuple[list[list[Any]], list[str]]:
     rows: list[list[Any]] = []
     errors: list[str] = []
@@ -323,6 +351,10 @@ def fred_rows(captured: str) -> tuple[list[list[Any]], list[str]]:
                     method = "API"
                 except Exception as api_exc:  # noqa: BLE001
                     api_diagnostic = "API " + safe_transport_error(api_exc)
+                    reason = fred_api_rejection(api_exc)
+                    if reason:
+                        api_diagnostic += " [" + reason + "]"
+                    print(json.dumps({"source": "FRED", "series": series_id, "api_failure": api_diagnostic}), flush=True)
                     observations = None
 
             if observations is None:

@@ -7,6 +7,24 @@ import ft_macro_pipeline as pipeline
 
 
 class DiagnosticsTests(unittest.TestCase):
+    def test_rejection_classification_never_echoes_server_text(self):
+        response = requests.Response()
+        response.status_code = 400
+        response._content = b'{"error_message":"Bad Request. The value for variable api_key is not registered. PRIVATE https://example.invalid"}'
+        result = pipeline.fred_api_rejection(requests.HTTPError(response=response))
+        self.assertEqual(result, "FRED rejects API key as invalid or unregistered")
+        self.assertNotIn("PRIVATE", result)
+
+    def test_key_format_and_parameter_rejections(self):
+        for message, expected in [
+            ("api_key must be a 32 character alpha-numeric string", "API key format"),
+            ("series_id does not exist", "parameter series_id"),
+            ("unrecognized PRIVATE", "raw response withheld"),
+        ]:
+            response = requests.Response()
+            response._content = ('{"error_message":"' + message + '"}').encode()
+            self.assertIn(expected, pipeline.fred_api_rejection(requests.HTTPError(response=response)))
+
     def test_nested_errors_exclude_credentials_and_urls(self):
         inner = OSError(111, "api_key=PRIVATE https://example.invalid")
         outer = requests.ConnectionError(inner)
