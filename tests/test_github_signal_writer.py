@@ -102,10 +102,6 @@ class Book:
                             q["range"]["startRowIndex"] + dr,
                             q["range"]["startColumnIndex"] + dc,
                         )] = value
-            elif "updateTable" in req:
-                table = req["updateTable"]["table"]
-                self.tables[table["tableId"] if table["tableId"] in self.tables else "FTGitHubSignals"] if False else None
-
         # update tables in a second simple pass
         for req in body["requests"]:
             if "updateTable" in req:
