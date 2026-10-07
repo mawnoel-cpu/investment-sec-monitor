@@ -5,24 +5,37 @@ on:
   pull_request:
     paths:
       - "ft_github_signal_pipeline.py"
-      - "tests/test_github_signal_pipeline.py"
+      - "ft_github_signal_writer.py"
+      - "feed_validation.py"
+      - "tests/test_github_signal*.py"
       - "requirements.txt"
       - ".github/workflows/github_signal_pipeline.yml"
   push:
     branches: [main]
     paths:
       - "ft_github_signal_pipeline.py"
-      - "tests/test_github_signal_pipeline.py"
+      - "ft_github_signal_writer.py"
+      - "feed_validation.py"
+      - "tests/test_github_signal*.py"
       - "requirements.txt"
       - ".github/workflows/github_signal_pipeline.yml"
+  schedule:
+    # Toronto UTC-4 through 31 Oct 2026: 10:45 weekday collection.
+    - cron: "45 14 * 10 1-5"
+    # Toronto UTC-5 from 1 Nov 2026; game ends 27 Nov.
+    - cron: "45 15 1-27 11 1-5"
 
 permissions:
   contents: read
 
+concurrency:
+  group: ft-game-github-writer
+  cancel-in-progress: false
+
 jobs:
-  validate-github-signals:
+  update-github-signals:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
@@ -40,3 +53,9 @@ jobs:
         env:
           GH_SIGNAL_TOKEN: ${{ secrets.GH_SIGNAL_TOKEN }}
         run: python ft_github_signal_pipeline.py --dry-run
+      - name: Update FT Game GitHub Signal Feed
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GH_SIGNAL_TOKEN: ${{ secrets.GH_SIGNAL_TOKEN }}
+        run: python ft_github_signal_writer.py
