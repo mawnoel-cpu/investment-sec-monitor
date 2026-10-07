@@ -28,6 +28,6 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
       - name: Compile SEC, macro and shared modules without executing writers
-        run: python -m compileall -q ft_sec_pipeline.py ft_macro_pipeline.py ft_macro_coordinator.py feed_validation.py
+        run: python -m compileall -q ft_sec_pipeline.py ft_macro_pipeline.py ft_macro_coordinator.py ft_github_signal_pipeline.py feed_validation.py
       - name: Run full offline regression suite without credentials or network
         run: python tests/run_offline.py

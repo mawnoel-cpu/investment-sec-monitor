@@ -1,0 +1,42 @@
+name: GitHub Investor Signal Monitor
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "ft_github_signal_pipeline.py"
+      - "tests/test_github_signal_pipeline.py"
+      - "requirements.txt"
+      - ".github/workflows/github_signal_pipeline.yml"
+  push:
+    branches: [main]
+    paths:
+      - "ft_github_signal_pipeline.py"
+      - "tests/test_github_signal_pipeline.py"
+      - "requirements.txt"
+      - ".github/workflows/github_signal_pipeline.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  validate-github-signals:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: "pip"
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run offline regression suite
+        run: python tests/run_offline.py
+      - name: Live read-only GitHub signal validation
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        env:
+          GH_SIGNAL_TOKEN: ${{ secrets.GH_SIGNAL_TOKEN }}
+        run: python ft_github_signal_pipeline.py --dry-run
