@@ -1,6 +1,6 @@
 """SEC EDGAR -> FT Game Intelligence SEC Feed.
 
-Discovery-only collector. It reads the FT Game portfolio universe, fetches recent
+Discovery-only collector. It reads holdings, CANDIDATE POOL and retained backups, fetches recent
 SEC filings, deduplicates by accession, and writes to the SEC Feed tab. It does
 not create eligible Evidence or trading signals.
 
@@ -129,6 +129,41 @@ def portfolio_universe(ws: Any) -> list[str]:
     return tickers
 
 
+def research_universe(book: Any, holdings: list[str]) -> tuple[list[str], list[str]]:
+    """Merge holdings and shortlist identities; a missing source is a coverage gap."""
+    tickers = list(holdings)
+    seen = {ticker.split(":", 1)[0].upper() for ticker in holdings}
+    failures: list[str] = []
+    sources = (
+        ("CANDIDATE POOL", "A4:A4", "Ticker", "A5:A104"),
+        ("ROTATION BENCH", "C4:C4", "BACKUP", "C5:C15"),
+    )
+    for title, header_range, header, data_range in sources:
+        try:
+            ws = book.worksheet(title)
+            if ws.get(header_range) != [[header]]:
+                raise ValueError(f"{title} headers mismatch at {header_range}")
+            values = ws.get(data_range)
+            names = []
+            for row in values:
+                if not row or row[0] in ("", None):
+                    continue
+                ticker = str(row[0]).strip()
+                if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.^/:-]*", ticker):
+                    raise ValueError(f"{title} contains invalid ticker")
+                names.append(ticker)
+            if not names:
+                raise ValueError(f"{title} candidate universe is empty")
+            for ticker in names:
+                issuer_ticker = ticker.split(":", 1)[0].upper()
+                if issuer_ticker not in seen:
+                    tickers.append(ticker)
+                    seen.add(issuer_ticker)
+        except Exception as exc:
+            failures.append(f"{title} universe unavailable: {type(exc).__name__}")
+    return tickers, failures
+
+
 def ticker_map(sec: SecClient) -> dict[str, dict[str, Any]]:
     raw = sec.get_json("https://www.sec.gov/files/company_tickers.json")
     result: dict[str, dict[str, Any]] = {}
@@ -247,7 +282,8 @@ def main() -> None:
     feed_ws = spreadsheet.worksheet(SEC_FEED_SHEET)
 
     validate_destination(spreadsheet, feed_ws)
-    universe = portfolio_universe(portfolio_ws)
+    holdings = portfolio_universe(portfolio_ws)
+    universe, universe_failures = research_universe(spreadsheet, holdings)
     try:
         mapping = ticker_map(sec)
     except Exception as exc:
@@ -257,7 +293,7 @@ def main() -> None:
 
     rows: list[list[Any]] = []
     duplicates = 0
-    failures: list[str] = []
+    failures: list[str] = list(universe_failures)
     checked = 0
     successful = 0
     skipped_old = 0
@@ -332,7 +368,8 @@ def main() -> None:
 
     status = "Success" if not failures else ("Partial" if successful else "Failure")
     notes = (
-        f"FT Game SEC discovery feed; ignored {skipped_old} pre-game filings. "
+        f"FT Game SEC discovery feed; holdings + candidate pool + retained backups; "
+        f"{len(universe)} unique issuer tickers; ignored {skipped_old} pre-game filings. "
         + ("; ".join(failures) if failures else "No issuer failures.")
     )
     append_run_log(spreadsheet, feed_ws, status, checked, len(rows), duplicates, len(failures), notes)
