@@ -78,6 +78,41 @@ class Sources(unittest.TestCase):
                 'BAMLH0A0HYM2',
             )
 
+    def test_nominal_yields_keep_weekly_history_through_api_and_csv(self):
+        from datetime import date, timedelta
+        periods = [(date(2026, 9, 24) + timedelta(days=i)).isoformat() for i in range(14)]
+        items = [{'date': d, 'value': str(4 + i / 100)} for i, d in enumerate(periods)]
+        items[4]['value'] = '.'
+        items[9]['value'] = '.'
+        for series in ('DGS2', 'DGS10'):
+            with self.subTest(series=series):
+                csv = 'DATE,' + series + '\n' + '\n'.join(
+                    item['date'] + ',' + item['value'] for item in items)
+                api_rows = pipeline.fred_api_observations({'observations': items}, series)
+                self.assertEqual(api_rows, pipeline.fred_csv_observations(csv, series))
+                self.assertEqual(len(api_rows), 10)
+                self.assertLessEqual(api_rows[0][0], '2026-09-30')
+                self.assertEqual(api_rows[-1][0], '2026-10-07')
+        # Existing scored-series history remains unchanged.
+        self.assertEqual(len(pipeline.fred_api_observations({'observations': items}, 'DFII10')), 5)
+
+    def test_nominal_yield_collection_requests_history_and_preserves_identity(self):
+        def response(url, params):
+            value = '4.77' if params['series_id'] == 'DGS2' else '5.28'
+            return SimpleNamespace(json=lambda: {
+                'observations': [{'date': '2026-10-07', 'value': value}]})
+        config = {sid: pipeline.FRED_SERIES[sid] for sid in ('DGS2', 'DGS10')}
+        with patch.dict(pipeline.FRED_SERIES, config, clear=True), patch.dict(
+            pipeline.os.environ, {'FRED_API_KEY': 'test-key'}, clear=False
+        ), patch.object(pipeline, 'http_get', side_effect=response) as get:
+            rows, errors = pipeline.fred_rows('2026-10-08T18:00:00-04:00')
+        self.assertFalse(errors)
+        self.assertEqual([r[2] for r in rows], ['DGS2', 'DGS10'])
+        self.assertEqual([r[5] for r in rows], [4.77, 5.28])
+        self.assertTrue(all(r[6:9] == ['Percent', 'Daily', 'Observation'] for r in rows))
+        self.assertTrue(all(r[13] == 'Verified data' for r in rows))
+        self.assertTrue(all(call.kwargs['params']['limit'] == 20 for call in get.call_args_list))
+
     def test_fred_html_fallback_remains_available(self):
         html = '<h1>HY (BAMLH0A0HYM2)</h1> Units: Percent Frequency: Daily <p>2026-10-01: 3.24</p>'
         responses = [
@@ -121,3 +156,4 @@ class Sources(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+

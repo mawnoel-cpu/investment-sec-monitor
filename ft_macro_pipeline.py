@@ -32,9 +32,15 @@ FRED_SERIES = {
     "BAMLC0A0CM": ("US investment-grade corporate spread", "Percent", "Daily"),
     "DFII10": ("10-year real Treasury yield", "Percent", "Daily"),
     "T10Y2Y": ("10y minus 2y Treasury spread", "Percent", "Daily"),
+    "DGS2": ("2-year nominal Treasury yield", "Percent", "Daily"),
+    "DGS10": ("10-year nominal Treasury yield", "Percent", "Daily"),
     "NFCI": ("Chicago Fed National Financial Conditions Index", "Index", "Weekly"),
     "DRTSCILM": ("Banks tightening C&I lending standards", "Percent", "Quarterly"),
 }
+
+# Keep enough nominal-yield observations for an actual seven-calendar-day
+# comparison, including weekends/holidays. Other series retain their history size.
+FRED_HISTORY_SIZE = {"DGS2": 10, "DGS10": 10}
 
 EIA_SERIES = {
     "NG.NW2_EPG0_SWO_R48_BCF.W": (
@@ -220,7 +226,7 @@ def fred_api_observations(payload, series_id):
             observations[period] = value
     if not observations:
         raise ValueError("No dated official FRED API observations")
-    return sorted(observations.items())[-5:]
+    return sorted(observations.items())[-FRED_HISTORY_SIZE.get(series_id, 5):]
 
 
 def fred_csv_observations(text, series_id):
@@ -250,7 +256,7 @@ def fred_csv_observations(text, series_id):
 
     if not observations:
         raise ValueError("No dated official FRED CSV observations")
-    return sorted(observations.items())[-5:]
+    return sorted(observations.items())[-FRED_HISTORY_SIZE.get(series_id, 5):]
 
 
 def fred_page_observations(text, series_id):
@@ -268,7 +274,7 @@ def fred_page_observations(text, series_id):
             observations[f'{year}-{(int(quarter)-1)*3+1:02d}-01'] = float(value)
     if not observations:
         raise ValueError('No dated official FRED observations')
-    return sorted(observations.items())[-5:]
+    return sorted(observations.items())[-FRED_HISTORY_SIZE.get(series_id, 5):]
 
 
 def safe_transport_error(exc):
@@ -344,7 +350,9 @@ def fred_rows(captured: str) -> tuple[list[list[Any]], list[str]]:
                             "api_key": api_key,
                             "file_type": "json",
                             "sort_order": "desc",
-                            "limit": 5,
+                            # Missing holiday observations do not consume the
+                            # usable history needed by nominal-yield comparisons.
+                            "limit": 20 if series_id in FRED_HISTORY_SIZE else 5,
                         },
                     )
                     observations = fred_api_observations(response.json(), series_id)
@@ -593,3 +601,4 @@ def main():
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

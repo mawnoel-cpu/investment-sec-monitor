@@ -38,11 +38,11 @@ class DiagnosticsTests(unittest.TestCase):
         response.status_code = 403
         api_error = requests.HTTPError("secret", response=response)
         with patch.dict(os.environ, {"FRED_API_KEY": "PRIVATE"}), patch.object(
-            pipeline, "http_get", side_effect=[api_error, requests.ConnectionError(), requests.Timeout()] * 6
+            pipeline, "http_get", side_effect=[api_error, requests.ConnectionError(), requests.Timeout()] * len(pipeline.FRED_SERIES)
         ):
             rows, errors = pipeline.fred_rows("2026-10-06T20:00:00-04:00")
         self.assertEqual(rows, [])
-        self.assertEqual(len(errors), 6)
+        self.assertEqual(len(errors), len(pipeline.FRED_SERIES))
         self.assertIn("API HTTPError(HTTP=403)", errors[0])
         self.assertIn("page Timeout", errors[0])
         self.assertNotIn("PRIVATE", " ".join(errors))
@@ -54,3 +54,4 @@ class DiagnosticsTests(unittest.TestCase):
             _, errors = pipeline.fred_rows("2026-10-06T20:00:00-04:00")
         self.assertIn("API skipped (key absent)", errors[0])
         self.assertNotIn("secret", " ".join(errors))
+
