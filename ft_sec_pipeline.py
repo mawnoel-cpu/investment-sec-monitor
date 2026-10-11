@@ -4,8 +4,8 @@ Discovery-only collector. It reads holdings, CANDIDATE POOL and retained backups
 SEC filings, deduplicates by accession, and writes to the SEC Feed tab. It does
 not create eligible Evidence or trading signals.
 
-This file is wired to GitHub Actions so collector changes automatically run a
-verification pass in addition to the normal twice-daily schedule.
+GitHub Actions tests collector changes without writing live data. Scheduled and
+manual runs collect filings through the game end date.
 """
 
 from __future__ import annotations
@@ -101,7 +101,14 @@ def google_client() -> Any:
 
 
 def portfolio_universe(ws: Any) -> list[str]:
-    if ws.get("A7:D7") != [["Ticker", "Company", "Current", "Queued target"]]:
+    # These are the two established labels for the same column. Do not accept
+    # arbitrary headers or infer an order executed from its working weight.
+    headers = ws.get("A7:D7")
+    allowed = [
+        ["Ticker", "Company", "Current", "Queued target"],
+        ["Ticker", "Company", "Working weight", "Queued target"],
+    ]
+    if headers not in [[row] for row in allowed]:
         raise ValueError("Portfolio headers mismatch at A7:D7")
     # Summary/rules below the supported holdings block must not hide new holdings.
     summaries = {20: "TOTAL", 21: "Weight check", 22: "Holdings", 23: "Position cap"}
@@ -268,27 +275,16 @@ def append_run_log(book, ws, status, issuers_checked, new_filings, duplicates, f
         raise RuntimeError("SEC final log readback mismatch")
 
 
-def main() -> None:
-    now = datetime.now(ZoneInfo("America/Toronto"))
-    if now > GAME_END:
-        print("FT Game ended; SEC collector exited without changes.")
-        return
-
+def collect(spreadsheet: Any, feed_ws: Any, now: datetime) -> dict[str, Any]:
     contact_email = os.environ.get("SEC_CONTACT_EMAIL", "")
     sec = SecClient(contact_email)
-    google = google_client()
-    spreadsheet = google.open_by_key(SPREADSHEET_ID)
     portfolio_ws = spreadsheet.worksheet(PORTFOLIO_SHEET)
-    feed_ws = spreadsheet.worksheet(SEC_FEED_SHEET)
-
-    validate_destination(spreadsheet, feed_ws)
     holdings = portfolio_universe(portfolio_ws)
     universe, universe_failures = research_universe(spreadsheet, holdings)
     try:
         mapping = ticker_map(sec)
     except Exception as exc:
-        append_run_log(spreadsheet, feed_ws, "Failure", 0, 0, 0, 1, "SEC issuer mapping unavailable: " + type(exc).__name__)
-        raise RuntimeError("SEC issuer mapping unavailable") from None
+        raise RuntimeError("SEC issuer mapping unavailable: " + type(exc).__name__) from None
     keys = existing_keys(feed_ws)
 
     rows: list[list[Any]] = []
@@ -374,7 +370,7 @@ def main() -> None:
     )
     append_run_log(spreadsheet, feed_ws, status, checked, len(rows), duplicates, len(failures), notes)
 
-    result = {
+    return {
         "status": status,
         "issuers_checked": checked,
         "new_filings": len(rows),
@@ -382,10 +378,41 @@ def main() -> None:
         "pre_game_filings_skipped": skipped_old,
         "failures": failures,
     }
+
+
+def main() -> None:
+    now = datetime.now(ZoneInfo("America/Toronto"))
+    if now > GAME_END:
+        print("FT Game ended; SEC collector exited without changes.")
+        return
+
+    google = google_client()
+    spreadsheet = google.open_by_key(SPREADSHEET_ID)
+    feed_ws = spreadsheet.worksheet(SEC_FEED_SHEET)
+    # Never attempt even a diagnostic write into an unverified destination.
+    validate_destination(spreadsheet, feed_ws)
+    try:
+        result = collect(spreadsheet, feed_ws, now)
+    except Exception as exc:
+        # Unknown counts stay blank; writes may have occurred before readback
+        # failed. Do not echo upstream response bodies, credentials or URLs.
+        note = (
+            f"SEC collection aborted before verified completion ({type(exc).__name__}). "
+            "Counts are unverified; see the failed GitHub Actions run for details."
+        )
+        try:
+            append_run_log(spreadsheet, feed_ws, "Failure", "", "", "", 1, note)
+        except Exception as log_exc:
+            print(json.dumps({"status": "Failure", "failure_log": "unverified",
+                              "error_type": type(log_exc).__name__}))
+        raise
+
     print(json.dumps(result, ensure_ascii=False))
-    if status == "Failure":
+    # A total source failure is already recorded by collect; do not log twice.
+    if result["status"] == "Failure":
         raise RuntimeError(json.dumps(result))
 
 
 if __name__ == "__main__":
     main()
+
