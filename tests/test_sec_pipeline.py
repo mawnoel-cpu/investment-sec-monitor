@@ -114,12 +114,26 @@ class Tests(unittest.TestCase):
         self.assertEqual(ws.mutations, [])
 
     def test_supported_holdings_and_summaries(self):
-        ws = self.portfolio()
-        ws.cells[(7, 0)] = 'MU:NSQ'
-        ws.cells[(18, 0)] = 'AAPL:NSQ'
-        before = dict(ws.cells)
-        self.assertEqual(portfolio_universe(ws), ['MU:NSQ', 'AAPL:NSQ'])
-        self.assertEqual(ws.cells, before)
+        for label in ('Current', 'Working weight'):
+            with self.subTest(label=label):
+                ws = self.portfolio()
+                ws.cells[(6, 2)] = label
+                ws.cells[(7, 0)] = 'MU:NSQ'
+                ws.cells[(18, 0)] = 'AAPL:NSQ'
+                before = dict(ws.cells)
+                self.assertEqual(portfolio_universe(ws), ['MU:NSQ', 'AAPL:NSQ'])
+                self.assertEqual(ws.cells, before)
+
+    def test_unknown_or_reordered_headers_are_rejected(self):
+        for headers in (['Ticker', 'Company', 'Weight', 'Queued target'],
+                        ['Ticker', 'Company', 'Queued target', 'Working weight'],
+                        ['Company', 'Ticker', 'Working weight', 'Queued target']):
+            ws = self.portfolio()
+            ws.cells.update({(6, i): v for i, v in enumerate(headers)})
+            ws.cells[(7, 0)] = 'MU'
+            with self.assertRaisesRegex(ValueError, 'Portfolio headers mismatch'):
+                portfolio_universe(ws)
+            self.assertEqual(ws.mutations, [])
 
     def test_outside_holdings_rejected_without_mutation(self):
         for number in (20, 24, 100):
@@ -145,10 +159,15 @@ class Tests(unittest.TestCase):
                 ws.cells[(number - 1, i)] = v
         self.assertEqual(portfolio_universe(ws), ['MU:NSQ'])
 
-    def test_main_validation_errors_never_collect_or_write(self):
+    def test_main_validation_errors_only_log_when_destination_is_safe(self):
         import ft_sec_pipeline as pipeline
         from unittest.mock import Mock, patch
-        for problem in ('empty', 'outside', 'header', 'bounds'):
+        class Clock(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return cls(2026, 10, 10, 21, tzinfo=tz)
+
+        for problem in ('empty', 'outside', 'portfolio_header', 'header', 'bounds'):
             portfolio = self.portfolio()
             ws = Sheet()
             book = Book(ws)
@@ -157,6 +176,8 @@ class Tests(unittest.TestCase):
                 portfolio.cells[(23, 0)] = 'AAPL:NSQ'
             elif problem == 'header':
                 ws.cells[(6, 0)] = 'Wrong'
+            elif problem == 'portfolio_header':
+                portfolio.cells[(6, 2)] = 'Wrong'
             elif problem == 'bounds':
                 book.tables['FTSECFilings']['range']['startRowIndex'] = 7
             book.worksheet = lambda name: portfolio if name == 'Portfolio' else ws
@@ -166,15 +187,76 @@ class Tests(unittest.TestCase):
                 patch.object(pipeline, 'google_client', return_value=google),
                 patch.object(pipeline, 'SecClient') as sec,
                 patch.object(pipeline, 'ticker_map') as mapping,
-                patch.object(pipeline, 'datetime') as clock,
+                patch.object(pipeline, 'datetime', Clock),
             ):
-                clock.now.return_value = datetime(2026, 10, 2, tzinfo=ZoneInfo('America/Toronto'))
                 with self.assertRaises(ValueError):
                     pipeline.main()
                 mapping.assert_not_called()
                 sec.return_value.get_json.assert_not_called()
-            self.assertEqual(book.calls, [])
+            if problem in ('header', 'bounds'):
+                self.assertEqual(book.calls, [])
+            else:
+                self.assertEqual(ws.cells[(7, 16)], 'Failure')
+                self.assertEqual([ws.cells[(7, c)] for c in (17, 18, 19)], ['', '', ''])
+                self.assertEqual(ws.cells[(7, 20)], 1)
+                self.assertIn('Counts are unverified', ws.cells[(7, 21)])
+                self.assertNotIn((8, 15), ws.cells)
+                self.assertFalse(any(r >= 7 and c < 13 for r, c in ws.cells))
             self.assertEqual(ws.mutations, [])
+
+    def test_failure_log_does_not_echo_sensitive_upstream_error(self):
+        import ft_sec_pipeline as pipeline
+        from unittest.mock import Mock, patch
+        ws = Sheet()
+        book = Book(ws)
+        book.worksheet = lambda name: ws
+        google = Mock()
+        google.open_by_key.return_value = book
+        with (patch.object(pipeline, 'google_client', return_value=google),
+              patch.object(pipeline, 'GAME_END', datetime.max.replace(tzinfo=ZoneInfo('America/Toronto'))),
+              patch.object(pipeline, 'collect', side_effect=RuntimeError('secret-url-token'))):
+            with self.assertRaisesRegex(RuntimeError, 'secret-url-token'):
+                pipeline.main()
+        self.assertEqual(ws.cells[(7, 16)], 'Failure')
+        self.assertNotIn('secret-url-token', ws.cells[(7, 21)])
+
+    def test_logging_error_does_not_mask_original_failure(self):
+        import ft_sec_pipeline as pipeline
+        from unittest.mock import Mock, patch
+        ws = Sheet()
+        book = Book(ws)
+        book.worksheet = lambda name: ws
+        google = Mock()
+        google.open_by_key.return_value = book
+        with (patch.object(pipeline, 'google_client', return_value=google),
+              patch.object(pipeline, 'GAME_END', datetime.max.replace(tzinfo=ZoneInfo('America/Toronto'))),
+              patch.object(pipeline, 'collect', side_effect=ValueError('original failure')),
+              patch.object(pipeline, 'append_run_log', side_effect=RuntimeError('log unavailable'))):
+            with self.assertRaisesRegex(ValueError, 'original failure'):
+                pipeline.main()
+
+    def test_total_source_failure_has_one_verified_failure_log(self):
+        import ft_sec_pipeline as pipeline
+        from unittest.mock import Mock, patch
+        portfolio = self.portfolio()
+        portfolio.cells[(6, 2)] = 'Working weight'
+        portfolio.cells[(7, 0)] = 'MU'
+        ws = Sheet()
+        book = Book(ws)
+        book.worksheet = lambda name: portfolio if name == 'Portfolio' else ws
+        google = Mock()
+        google.open_by_key.return_value = book
+        with (patch.object(pipeline, 'google_client', return_value=google),
+              patch.object(pipeline, 'GAME_END', datetime.max.replace(tzinfo=ZoneInfo('America/Toronto'))),
+              patch.object(pipeline, 'SecClient') as sec,
+              patch.object(pipeline, 'research_universe', return_value=(['MU'], [])),
+              patch.object(pipeline, 'ticker_map', return_value={'MU': {'cik': '0001', 'title': 'Micron'}})):
+            sec.return_value.get_json.side_effect = RuntimeError('upstream unavailable')
+            with self.assertRaisesRegex(RuntimeError, 'Failure'):
+                pipeline.main()
+        self.assertEqual(ws.cells[(7, 16)], 'Failure')
+        self.assertEqual(ws.cells[(7, 17)], 1)
+        self.assertNotIn((8, 15), ws.cells)
 
     def test_timestamp_is_numeric_toronto_time(self):
         a = date_serial('2026-10-02T18:00:00+00:00')
@@ -214,3 +296,4 @@ class Tests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
