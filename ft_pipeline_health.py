@@ -38,6 +38,10 @@ def evaluate(now, intake, reviews, snapshots, required, verified):
     saved = [r for r in snapshots if value(r, 1) == key]
     counts = Counter(value(r, 2) for r in saved)
     missing = sorted(t for t in required if counts[t] != 1)
+    invalid = sorted(value(r, 2) for r in saved if value(r, 2) in required and
+                     (not isinstance(value(r, 0), (int, float)) or
+                      not day <= value(r, 0) <= prices.serial(now) or
+                      not value(r, 10) or not value(r, 18)))
     complete = False
     review_state = "PENDING"
     location = "Reviews!A8:J1001 / Decision History!A5:S1000"
@@ -47,7 +51,7 @@ def evaluate(now, intake, reviews, snapshots, required, verified):
         stamp, asof = value(row, 0, 0), value(row, 2, 0)
         decision = str(value(row, 5))
         dates_ok = isinstance(stamp, (int, float)) and isinstance(asof, (int, float)) and day <= stamp <= prices.serial(now) and day <= asof <= prices.serial(now)
-        complete = dates_ok and bool(decision) and not re.match(r"(?i)^(started|pending|failed|incomplete|blocked|in progress)", decision) and not missing
+        complete = dates_ok and bool(decision) and not re.match(r"(?i)^(started|pending|failed|incomplete|blocked|in progress)", decision) and not missing and not invalid
         if complete and isinstance(verified, (int, float)) and asof < verified:
             review_state = "NEW INPUTS"
             complete = False
@@ -61,7 +65,7 @@ def evaluate(now, intake, reviews, snapshots, required, verified):
     elif len(matches) > 1:
         review_state = "DUPLICATE"
     if not complete and now.time() >= time(14, 45):
-        faults.append(f"{location}: review {review_state}; missing/duplicate snapshots {','.join(missing) or 'none'}")
+        faults.append(f"{location}: review {review_state}; missing/duplicate snapshots {','.join(missing) or 'none'}; invalid timestamp/action/coverage {','.join(invalid) or 'none'}")
     return research, review_state, faults
 
 
@@ -105,7 +109,8 @@ def main(now=None):
     rows = health.get("A44:I1000", value_render_option="UNFORMATTED_VALUE")
     dest = 44 + len(rows)
     link = "https://github.com/mawnoel-cpu/investment-sec-monitor/actions/runs/" + os.getenv("GITHUB_RUN_ID", "local")
-    details = " | ".join(faults) or ("Required outputs saved; broader research remains Partial" if research.endswith("PARTIAL") else "No currently due persistence faults")
+    all_saved = price_state == "SAVED" and research.startswith("SAVED ") and review == "SAVED"
+    details = " | ".join(faults) or ("All required writes verified; broader research remains Partial" if all_saved and research.endswith("PARTIAL") else "All required writes verified" if all_saved else "Waiting for unfinished stages; not yet due. This is not an end-to-end completion receipt.")
     record = [prices.serial(now), price_state, research, review, len(tracked), len(required), details[:48000], link, os.getenv("GITHUB_SHA", "local")]
     health.update(range_name=f"A{dest}:I{dest}", values=[record], value_input_option="RAW")
     if not prices.rows_match(health.get(f"A{dest}:I{dest}", value_render_option="UNFORMATTED_VALUE"), [record]):
@@ -113,7 +118,7 @@ def main(now=None):
     desk = book.worksheet("TRADE DESK")
     note = f"Persistence audit BACKEND HEALTH!A{dest}:I{dest}, {now.isoformat()}. " + details
     book.batch_update({"requests": [{"updateCells": {"range": {"sheetId": desk.id, "startRowIndex": 12, "endRowIndex": 13, "startColumnIndex": 1, "endColumnIndex": 2}, "rows": [{"values": [{"note": note}]}], "fields": "note"}}, {"repeatCell": {"range": {"sheetId": health.id, "startRowIndex": dest-1, "endRowIndex": dest, "startColumnIndex": 0, "endColumnIndex": 1}, "cell": {"userEnteredFormat": {"numberFormat": {"type": "DATE_TIME", "pattern": "dd mmm yyyy HH:mm"}}}, "fields": "userEnteredFormat.numberFormat"}}]})
-    print(json.dumps({"status": "Failed" if faults else "Verified", "prices": price_state, "research": research, "review": review, "audit_row": dest, "faults": faults, "readback": "verified"}))
+    print(json.dumps({"status": "Failed" if faults else "Verified" if all_saved else "Waiting", "prices": price_state, "research": research, "review": review, "audit_row": dest, "faults": faults, "readback": "verified"}))
     if faults:
         raise RuntimeError("FT persistence audit failed; see exact workbook cells above")
 

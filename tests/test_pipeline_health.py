@@ -10,7 +10,7 @@ class PersistenceTests(unittest.TestCase):
         t=p.serial(now)-.01
         intake=[[t,"Partial",2,2,1,0,0,"Finalized; broad backlog remains"]]
         reviews=[[t,"Daily",t,"portfolio","risk","TRIM ALAB to5%; other holdings HOLD","sources","audit","partial coverage","Daily:2026-10-14"]]
-        snaps=[[t,"Daily:2026-10-14","ALAB"]]
+        snaps=[[t,"Daily:2026-10-14","ALAB"]+[""]*7+["TRIM"]+[""]*7+["Verified completed session"]]
         return now,intake,reviews,snaps,{"ALAB"},t
 
     def test_partial_coverage_can_have_verified_persistence(self):
@@ -34,3 +34,8 @@ class PersistenceTests(unittest.TestCase):
     def test_new_research_requires_review_refresh(self):
         f=list(self.fixture());f[5]+=.005
         self.assertEqual(h.evaluate(*f)[1],"NEW INPUTS")
+
+    def test_snapshot_requires_real_date_action_and_coverage(self):
+        for column, bad in ((0, 1), (0, "bad"), (10, ""), (18, "")):
+            f=list(self.fixture());f[3][0][column]=bad
+            self.assertEqual(h.evaluate(*f)[1], "INCOMPLETE")

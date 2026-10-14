@@ -196,6 +196,10 @@ def tracking(book):
     # Sector proxies used by the held refiner and upstream oil producer.
     for ticker in ("CRAK", "XOP"):
         tracked[ticker] = "NYSEARCA:" + ticker
+    # Subindustry leadership and company attribution use these proxies too.
+    for r in mon.get("A136:C157"):
+        if len(r) >= 3 and r[0] and r[1] and ":" in str(r[2]):
+            tracked[str(r[1])] = str(r[2])
     for r in book.worksheet("Portfolio").get("A8:D19", value_render_option="UNFORMATTED_VALUE"):
         if len(r) >= 4 and any(isinstance(v, (float, int)) and v > 0 for v in r[2:4]):
             ticker = str(r[0]).strip()
