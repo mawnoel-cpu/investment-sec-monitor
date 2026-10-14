@@ -1,0 +1,45 @@
+name: FT Game Price Close and Health Monitor
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "ft_price_writer.py"
+      - "tests/test_price_writer.py"
+      - ".github/workflows/price_pipeline.yml"
+  schedule:
+    # Pretrade audit before 14:45 Toronto decision, and post-close archive.
+    # October 2026 in EDT.
+    - cron: "10 18 * 10 1-5"   # 14:10 Toronto
+    - cron: "05 22 * 10 1-5"   # 18:05 Toronto
+    # 1–27 November 2026 in EST.
+    - cron: "10 19 1-27 11 1-5"  # 14:10 Toronto
+    - cron: "05 23 1-27 11 1-5"  # 18:05 Toronto
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ft-game-price-writer
+  cancel-in-progress: false
+
+jobs:
+  archive-and-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Offline data/session validation
+        run: python tests/run_offline.py
+      - name: Update verified FT prices, diagnosed coverage and decision-cell notes
+        if: github.ref == 'refs/heads/main'
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+        run: |
+          python ft_price_writer.py ${{ (github.event.schedule == '05 22 * 10 1-5' || github.event.schedule == '05 23 1-27 11 1-5') && 'close' || 'pretrade' }}
