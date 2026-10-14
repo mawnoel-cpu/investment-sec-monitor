@@ -28,6 +28,11 @@ LOG_COLUMNS = ["RUN AT", "RUN MODE", "STATUS", "TICKERS", "FAILURES / COVERAGE"]
 HTTP = requests.Session()
 HTTP.headers.update({"User-Agent": "Mozilla/5.0 (compatible; FTGamePriceArchive/1.0)"})
 MAX_HISTORICAL_DAYS = 95
+DATA_LAST_ROW = 12000
+# Exchange closures within the collection/game period. Never treat a holiday as
+# a missing close, or a pre-close daily candle as a completed session.
+US_HOLIDAYS = {date(2026, 9, 7), date(2026, 11, 26)}
+LSE_HOLIDAYS = {date(2026, 8, 31)}
 
 
 def serial(value):
@@ -59,10 +64,14 @@ def venue_info(ticker, gs):
 def last_completed(now, zone, close_time):
     local = now.astimezone(zone)
     day = local.date()
+    london = str(zone) == "Europe/London"
+    holidays = LSE_HOLIDAYS if london else US_HOLIDAYS
+    if not london and day == date(2026, 11, 27):
+        close_time = clock(13)
     # Require settlement buffer; today's Yahoo daily candle may still be intraday.
     if local.time() < (datetime.combine(day,close_time)+timedelta(minutes=35)).time():
         day -= timedelta(days=1)
-    while day.weekday()>=5:
+    while day.weekday()>=5 or day in holidays:
         day-=timedelta(days=1)
     return day
 
@@ -87,7 +96,7 @@ def yahoo_history(ticker, now):
             currency=str(meta.get("currency",""))
             _, unit, zone, _ = venue_info(ticker,"")
             if unit=="GBX":
-                if currency.lower() not in ("gbp","gbpence","gbpenny","gbp","gbx","gbp","gbp","gbp","gbp","gbp","gbp","gbp") and currency!="GBp":
+                if currency not in {"GBP", "GBp", "GBX", "GBx", "GBpence", "GBpenny"}:
                     raise ValueError("unexpected London currency "+currency)
                 factor=100 if currency=="GBP" else 1
             else:
@@ -172,15 +181,33 @@ def tracking(book):
     mon=book.worksheet("PRICE MONITOR")
     display=mon.get("A5:C36",value_render_option="FORMATTED_VALUE")
     for r in display:
-        if len(r)>=3 and r[1] and ":" in r[2] and r[1] in tracked:
+        if len(r)>=3 and r[0] in {"HOLDING", "BENCH"} and r[1] and ":" in r[2]:
             tracked[r[1]]=r[2]
         if len(r)>=3 and r[0] in {"QQQ","SOXX","SPY","XLI","COPX","XLV"}:
             tracked[r[0]]=r[2]
+    # The research universe is broader than the nine PRICE GATES replacements.
+    # Read current symbols instead of freezing yesterday's holdings in code.
+    for r in book.worksheet("CANDIDATE POOL").get("A5:D104"):
+        if len(r) >= 4 and r[0] and ":" in str(r[3]):
+            tracked[str(r[0]).strip()] = str(r[3]).strip()
+    for r in mon.get("A39:C48"):
+        if len(r) >= 3 and r[0] in {"GROWTH", "SECTOR"} and r[1] and ":" in str(r[2]):
+            tracked[str(r[1])] = str(r[2])
+    # Sector proxies used by the held refiner and upstream oil producer.
+    for ticker in ("CRAK", "XOP"):
+        tracked[ticker] = "NYSEARCA:" + ticker
+    for r in book.worksheet("Portfolio").get("A8:D19", value_render_option="UNFORMATTED_VALUE"):
+        if len(r) >= 4 and any(isinstance(v, (float, int)) and v > 0 for v in r[2:4]):
+            ticker = str(r[0]).strip()
+            if ticker not in tracked:
+                raise RuntimeError(f"Portfolio!A8:D19: held/queued {ticker} has no verified symbol mapping")
+    if not tracked:
+        raise RuntimeError("PRICE GATES/CANDIDATE POOL/PRICE MONITOR: empty universe")
     return tracked
 
 
 def existing_keys(ws):
-    values=ws.get("A5:J3999",value_render_option="UNFORMATTED_VALUE")
+    values=ws.get(f"A5:J{DATA_LAST_ROW}",value_render_option="UNFORMATTED_VALUE")
     keys=set()
     last=4
     prices={}
@@ -200,32 +227,27 @@ def existing_keys(ws):
 
 
 def get_google_fallback(book,ticker,now,gs):
-    """Use Google Finance only for a recorded, completed regular session."""
-    ws=book.worksheet("PRICE MONITOR")
-    values=ws.get("B5:S36",value_render_option="UNFORMATTED_VALUE")
-    for r in values:
-        if not r or str(r[0])!=ticker:
-            continue
-        try:
-            price=float(r[4])  # F when B is index zero
-            observed=r[16]    # R when B is index zero
-            if isinstance(observed,(int,float)):
-                ts=EPOCH+timedelta(days=float(observed))
-            else:
-                ts=datetime.fromisoformat(str(observed))
-            venue,unit,zone,close_time=venue_info(ticker,gs)
-            if not math.isfinite(price) or price<=0:
-                raise ValueError("bad quote")
-            if ts.date()!=last_completed(now,zone,close_time):
-                raise ValueError("quote not from last completed session")
-            # Google Finance trade time can be shown in Toronto or exchange local.
-            # Must indicate final regular-session trade; never archive an intraday tick.
-            if ts.hour<16 or ts.hour>22:
-                raise ValueError("quote not at regular-session close")
-            return [(ts.date(),price,"https://support.google.com/docs/answer/3093281")],""
-        except (ValueError,TypeError,IndexError):
-            return [],"Google Finance quote not verified as a completed-session close"
-    return [],"Google Finance symbol absent from PRICE MONITOR"
+    """Live GOOGLEFINANCE quotes are context, never a substitute daily bar.
+
+    tradetime is not a certified close, and its timezone differs by venue.
+    Yahoo daily bars and Stooq history provide the independently dated fallback.
+    """
+    return [], "Google Finance live quote is not a certified daily close"
+
+
+def rows_match(actual, expected):
+    if len(actual) != len(expected):
+        return False
+    for a, b in zip(actual, expected):
+        if len(a) != len(b):
+            return False
+        for x, y in zip(a, b):
+            if isinstance(x, (int, float)) and isinstance(y, (int, float)):
+                if not math.isclose(x, y, rel_tol=1e-12, abs_tol=1e-8):
+                    return False
+            elif x != y:
+                return False
+    return True
 
 
 def append_rows(ws,start,rows):
@@ -234,18 +256,23 @@ def append_rows(ws,start,rows):
         batch=rows[pos:pos+200]
         r1=start+pos
         ws.update(range_name=f"A{r1}:J{r1+len(batch)-1}",values=batch,value_input_option="RAW")
+        actual = ws.get(f"A{r1}:J{r1+len(batch)-1}", value_render_option="UNFORMATTED_VALUE")
+        if not rows_match(actual, batch):
+            raise RuntimeError(f"DAILY CLOSES!A{r1}:J{r1+len(batch)-1}: price write/readback mismatch")
 
 
-def save_log(ws,when,mode,state,total,failures):
+def save_log(ws,when,mode,state,total,failures,row_number=None):
     history=ws.get("L5:P200",value_render_option="UNFORMATTED_VALUE")
     start=5
     for i,row in enumerate(history):
         if row and row[0] not in ("",None):
             start=6+i
+    start = row_number or start
     if start>200:
         raise RuntimeError("DAILY CLOSES price-run log full L5:P200")
     ws.update(range_name=f"L{start}:P{start}",values=[[serial(when),mode,state,total," | ".join(failures)[:48000]]],value_input_option="RAW")
     ws.spreadsheet.batch_update({"requests":[{"repeatCell":{"range":{"sheetId":ws.id,"startRowIndex":start-1,"endRowIndex":start,"startColumnIndex":11,"endColumnIndex":12},"cell":{"userEnteredFormat":{"numberFormat":{"type":"DATE_TIME","pattern":"dd mmm yyyy HH:mm"}}},"fields":"userEnteredFormat.numberFormat"}}]})
+    return start
 
 
 def mark_fault_notes(book,issues):
@@ -257,7 +284,10 @@ def mark_fault_notes(book,issues):
         if not row or " — " not in row[0]:
             continue
         ticker=row[0].split(" — ",1)[0]
-        text=issues.get(ticker,"")
+        # Do not erase research/review diagnostics (especially SYSTEM/B13).
+        if ticker not in issues:
+            continue
+        text=issues[ticker]
         requests.append({"updateCells":{"range":{"sheetId":desk.id,"startRowIndex":i+1,"endRowIndex":i+2,"startColumnIndex":1,"endColumnIndex":2},"rows":[{"values":[{"note":text}]}],"fields":"note"}})
     if requests:
         desk.spreadsheet.batch_update({"requests":requests})
@@ -273,6 +303,10 @@ def main(mode="close",now=None):
     if ws.get("A4:J4")[0]!=DATA_COLUMNS:
         raise RuntimeError("DAILY CLOSES schema changed; refusing unsafe write")
     tracked=tracking(book)
+    if ws.row_count < DATA_LAST_ROW:
+        ws.resize(rows=DATA_LAST_ROW)
+    ws.update(range_name="L4:P4", values=[LOG_COLUMNS], value_input_option="RAW")
+    logrow = save_log(ws, now, mode, "Partial", len(tracked), ["Started; price data/write verification pending"])
     keys,original,last=existing_keys(ws)
     rows=[]; faults={}; bad=[]; success=0
     with ThreadPoolExecutor(max_workers=4) as pool:
@@ -290,8 +324,7 @@ def main(mode="close",now=None):
                     bad.append(ticker+": no verified daily close; "+err[:110])
                     continue
                 latest=max(bars)
-                gap=sum(1 for day in (expected-timedelta(days=k) for k in range(0,8)) if day.weekday()<5 and latest<day)
-                if gap>1:
+                if latest != expected:
                     bad.append(ticker+f": latest {latest} vs completed {expected}")
                     faults[ticker]=f"STALE PRICE: DAILY CLOSES!A:J latest {latest}, expected by {expected}. Live Google quote PRICE MONITOR!B:S requires verification."
                 else:
@@ -309,14 +342,15 @@ def main(mode="close",now=None):
                 bad.append(t+": unexpected "+str(exc)[:100])
                 faults[t]="COLLECTOR FAILURE: DAILY CLOSES!A:J for "+t+"; "+str(exc)[:170]
     rows.sort(key=lambda r:(r[0],r[1]))
-    if last+len(rows)>3999:
-        raise RuntimeError("DAILY CLOSES exceeds 3999 rows; no overwrite performed")
+    if last+len(rows)>DATA_LAST_ROW:
+        raise RuntimeError("DAILY CLOSES capacity exceeded; no overwrite performed")
     if rows:
         append_rows(ws,last+1,rows)
         # Native date and capture-time formatting for appended numeric serials.
         ws.spreadsheet.batch_update({"requests":[{"repeatCell":{"range":{"sheetId":ws.id,"startRowIndex":last,"endRowIndex":last+len(rows),"startColumnIndex":col,"endColumnIndex":col+1},"cell":{"userEnteredFormat":{"numberFormat":{"type":fmt,"pattern":pat}}},"fields":"userEnteredFormat.numberFormat"}} for col,fmt,pat in ((0,"DATE","dd mmm yyyy"),(7,"DATE_TIME","dd mmm yyyy HH:mm"))]})
     state="Complete" if success==len(tracked) and not bad else "Partial" if success else "Failed"
-    save_log(ws,now,mode,state,len(tracked),bad)
+    receipt = f"run={os.getenv('GITHUB_RUN_ID', 'local')}; sha={os.getenv('GITHUB_SHA', 'local')}; rows={len(rows)}; price readback verified"
+    save_log(ws,now,mode,state,len(tracked),bad + [receipt], row_number=logrow)
     mark_fault_notes(book,faults)
     # Explicit readback before reporting a successful write.
     log=ws.get("L5:P200",value_render_option="UNFORMATTED_VALUE")
@@ -324,8 +358,8 @@ def main(mode="close",now=None):
     if str(latest[2])!=state or str(latest[1])!=mode:
         raise RuntimeError("price run-log write/readback mismatch")
     print(json.dumps({"status":state,"tickers":len(tracked),"covered":success,"rows_added":len(rows),"failures":bad[:25]}))
-    if state=="Failed":
-        raise RuntimeError("No verified price source available for tracked symbols")
+    if state!="Complete":
+        raise RuntimeError("Incomplete verified price coverage; see DAILY CLOSES!L:P")
 
 
 if __name__=="__main__":
