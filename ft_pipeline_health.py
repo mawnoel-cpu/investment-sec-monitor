@@ -27,12 +27,12 @@ def evaluate(now, intake, reviews, snapshots, required, verified):
         research = "FAILED"
     elif str(value(row, 7)).lower().startswith("started"):
         research = "STARTED" if now.time() < time(13, 40) else "STALLED"
-    elif value(row, 1) in {"Complete", "Partial"}:
+    elif value(row, 1) in {"Complete", "Partial"} and isinstance(value(row, 8), (int, float)) and value(row, 0) <= value(row, 8) <= prices.serial(now):
         research = "SAVED " + value(row, 1).upper()
     else:
-        research = "INVALID"
-    if research in {"MISSING", "FAILED", "STALLED", "INVALID"}:
-        faults.append(f"Sources!A{n}:H{n}: research {research}; expected finalized write by13:40 Toronto")
+        research = "IN PROGRESS" if now.time() < time(13, 40) else "UNFINALIZED"
+    if research in {"MISSING", "FAILED", "STALLED", "UNFINALIZED"}:
+        faults.append(f"Sources!A{n}:I{n}: research {research}; expected numeric Completed at in I{n} by13:40 Toronto")
     key = "Daily:" + now.date().isoformat()
     matches = [(n, r) for n, r in enumerate(reviews, 8) if value(r, 9) == key]
     saved = [r for r in snapshots if value(r, 1) == key]
@@ -100,7 +100,7 @@ def main(now=None):
     source = book.worksheet("Sources")
     b39 = source.get("B39", value_render_option="UNFORMATTED_VALUE")
     verified = b39[0][0] if b39 and b39[0] else 0
-    research, review, issues = evaluate(now, source.get("A46:H1000", value_render_option="UNFORMATTED_VALUE"), book.worksheet("Reviews").get("A8:J1001", value_render_option="UNFORMATTED_VALUE"), book.worksheet("Decision History").get("A5:S1000", value_render_option="UNFORMATTED_VALUE"), required, verified)
+    research, review, issues = evaluate(now, source.get("A46:I1000", value_render_option="UNFORMATTED_VALUE"), book.worksheet("Reviews").get("A8:J1001", value_render_option="UNFORMATTED_VALUE"), book.worksheet("Decision History").get("A5:S1000", value_render_option="UNFORMATTED_VALUE"), required, verified)
     faults.extend(issues)
     health = book.worksheet("BACKEND HEALTH")
     if health.row_count < 1000:
@@ -111,6 +111,10 @@ def main(now=None):
     link = "https://github.com/mawnoel-cpu/investment-sec-monitor/actions/runs/" + os.getenv("GITHUB_RUN_ID", "local")
     all_saved = price_state == "SAVED" and research.startswith("SAVED ") and review == "SAVED"
     details = " | ".join(faults) or ("All required writes verified; broader research remains Partial" if all_saved and research.endswith("PARTIAL") else "All required writes verified" if all_saved else "Waiting for unfinished stages; not yet due. This is not an end-to-end completion receipt.")
+    window = health.get("B37", value_render_option="FORMATTED_VALUE")
+    delivery = window[0][0] if window and window[0] else "UNVERIFIED"
+    if "MISSED" in delivery:
+        details += " | Prewindow delivery MISSED: BACKEND HEALTH!B37, Sources!I46:I1000, Reviews!A8:J1001, DAILY CLOSES!L5:P200. Current recovery does not backdate the missed window."
     record = [prices.serial(now), price_state, research, review, len(tracked), len(required), details[:48000], link, os.getenv("GITHUB_SHA", "local")]
     health.update(range_name=f"A{dest}:I{dest}", values=[record], value_input_option="RAW")
     if not prices.rows_match(health.get(f"A{dest}:I{dest}", value_render_option="UNFORMATTED_VALUE"), [record]):
@@ -118,7 +122,7 @@ def main(now=None):
     desk = book.worksheet("TRADE DESK")
     note = f"Persistence audit BACKEND HEALTH!A{dest}:I{dest}, {now.isoformat()}. " + details
     book.batch_update({"requests": [{"updateCells": {"range": {"sheetId": desk.id, "startRowIndex": 12, "endRowIndex": 13, "startColumnIndex": 1, "endColumnIndex": 2}, "rows": [{"values": [{"note": note}]}], "fields": "note"}}, {"repeatCell": {"range": {"sheetId": health.id, "startRowIndex": dest-1, "endRowIndex": dest, "startColumnIndex": 0, "endColumnIndex": 1}, "cell": {"userEnteredFormat": {"numberFormat": {"type": "DATE_TIME", "pattern": "dd mmm yyyy HH:mm"}}}, "fields": "userEnteredFormat.numberFormat"}}]})
-    print(json.dumps({"status": "Failed" if faults else "Verified" if all_saved else "Waiting", "prices": price_state, "research": research, "review": review, "audit_row": dest, "faults": faults, "readback": "verified"}))
+    print(json.dumps({"status": "Failed" if faults else "Recovered late" if all_saved and "MISSED" in delivery else "Verified" if all_saved else "Waiting", "prices": price_state, "research": research, "review": review, "prewindow": delivery, "audit_row": dest, "faults": faults, "readback": "verified"}))
     if faults:
         raise RuntimeError("FT persistence audit failed; see exact workbook cells above")
 

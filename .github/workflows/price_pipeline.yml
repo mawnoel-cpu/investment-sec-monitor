@@ -13,10 +13,12 @@ on:
   schedule:
     # Pretrade audit before 14:20 Toronto decision, and post-close archive.
     # October 2026 in EDT.
+    - cron: "20 16 * 10 1-5"   # 12:20 Toronto redundancy for delayed Actions queues
     - cron: "50 17 * 10 1-5"   # 13:50 Toronto
     - cron: "50 18 * 10 1-5"   # 14:50 persistence audit before 15:15 decision
     - cron: "05 22 * 10 1-5"   # 18:05 Toronto
     # 1–27 November 2026 in EST.
+    - cron: "20 17 1-27 11 1-5"  # 12:20 Toronto redundancy
     - cron: "50 18 1-27 11 1-5"  # 13:50 Toronto
     - cron: "50 19 1-27 11 1-5"  # 14:50 persistence audit before decision
     - cron: "05 23 1-27 11 1-5"  # 18:05 Toronto
