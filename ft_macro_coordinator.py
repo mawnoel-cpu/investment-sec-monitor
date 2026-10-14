@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import sys
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -216,8 +217,19 @@ def diagnostics(rows, expected, now):
                 release -= timedelta(days=7)
             expected_date = release - timedelta(days=6)
         overdue = expected_date is not None and parse_date(latest[4]).date() < expected_date
+        official_delay = False
+        next_release = None
+        if group == ("EIA", "NG.RNGWHHD.D") and len(latest) > 14:
+            published = re.search(r"official_release=(\d{4}-\d{2}-\d{2})", str(latest[14]))
+            forthcoming = re.search(r"next_release=(\d{4}-\d{2}-\d{2})", str(latest[14]))
+            if published and forthcoming:
+                publication = datetime.fromisoformat(published.group(1)).date()
+                next_release = datetime.fromisoformat(forthcoming.group(1)).date()
+                official_delay = (not unverified and retrieval_age <= 24 and observation_age <= 14
+                    and parse_date(latest[4]).date() <= publication <= now.date()
+                    and now.date() < next_release <= now.date() + timedelta(days=7))
         stale = (
-            observation_age > observation_limit
+            (observation_age > observation_limit and not official_delay)
             or retrieval_age > retrieval_limit_hours
             or overdue
         )
@@ -227,7 +239,8 @@ def diagnostics(rows, expected, now):
             "retrieval_age_hours": retrieval_age,
             "verification": latest[13],
             "normal_latest_due": expected_date.isoformat() if expected_date else None,
-            "status": "Partial" if incomplete else "Unverified" if unverified else "Stale" if stale else "Current",
+            "official_next_release": next_release.isoformat() if next_release else None,
+            "status": "Partial" if incomplete else "Unverified" if unverified else "Stale" if stale else "Awaiting official release" if official_delay else "Current",
         }
         if unverified:
             errors.append(key + ": latest observation is not independently verified")

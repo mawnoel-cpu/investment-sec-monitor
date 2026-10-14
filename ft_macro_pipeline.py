@@ -487,12 +487,24 @@ def eia_rows(captured: str) -> tuple[list[list[Any]], list[str], int]:
     for series_id, (label, units, frequency, note, _) in enabled:
         try:
             _, original_url, _ = EIA_DOWNLOADS[series_id]
-            for period, value in eia_page_observations(http_get(original_url).text, series_id):
+            text = http_get(original_url).text
+            observations = eia_page_observations(text, series_id)
+            # Retain the publisher's own dated release calendar alongside data.
+            # This is source metadata, never a substitute observation date.
+            plain = ' '.join(OfficialPage(text).text)
+            dates = {}
+            for label, key in ((r'(?<!Next )Release Date', 'official_release'),
+                               (r'Next Release Date', 'next_release')):
+                match = re.search(label + r'\s*:\s*(\d{1,2}/\d{1,2}/\d{4})', plain, re.I)
+                if match:
+                    dates[key] = datetime.strptime(match.group(1), '%m/%d/%Y').date().isoformat()
+            calendar = '; '.join(k + '=' + v for k, v in dates.items())
+            for period, value in observations:
                 rows.append([
                     captured, "EIA", series_id, label, period, value, units, frequency,
                     "Observation", "US energy", original_url,
                     f"EIA:{series_id}:{period}:Observation", captured[:10], "Verified data",
-                    note + "; source header/category/units/date checked. Context only; electricity remains excluded.",
+                    note + "; source header/category/units/date checked. Context only; electricity remains excluded. " + calendar,
                 ])
         except Exception as exc:
             errors.append(f"EIA {series_id}: {type(exc).__name__}")
