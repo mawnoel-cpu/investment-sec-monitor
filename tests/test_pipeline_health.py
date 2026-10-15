@@ -40,6 +40,24 @@ class PersistenceTests(unittest.TestCase):
         f=list(self.fixture());f[5]+=.005
         self.assertEqual(h.evaluate(*f)[1],"NEW INPUTS")
 
+    def test_post_cutoff_evidence_is_deferred_to_next_day_without_hiding_saved_review(self):
+        f=list(self.fixture())
+        f[0]=datetime(2026,10,14,18,0,tzinfo=p.TORONTO)
+        f[5]=p.serial(datetime(2026,10,14,17,46,tzinfo=p.TORONTO))
+        research,review,faults=h.evaluate(*f)
+        self.assertEqual(research,"SAVED PARTIAL")
+        self.assertEqual(review,"NEXT-DAY INPUTS")
+        self.assertEqual(faults,[])
+
+    def test_post_cutoff_evidence_does_not_excuse_a_morning_only_review(self):
+        f=list(self.fixture())
+        f[0]=datetime(2026,10,14,18,0,tzinfo=p.TORONTO)
+        f[2][0][0]=p.serial(datetime(2026,10,14,13,0,tzinfo=p.TORONTO))
+        f[5]=p.serial(datetime(2026,10,14,17,46,tzinfo=p.TORONTO))
+        research,review,faults=h.evaluate(*f)
+        self.assertEqual(review,"PREWINDOW REFRESH MISSING")
+        self.assertTrue(faults)
+
     def test_snapshot_requires_real_date_action_and_coverage(self):
         for column, bad in ((0, 1), (0, "bad"), (10, ""), (18, "")):
             f=list(self.fixture());f[3][0][column]=bad
