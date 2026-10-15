@@ -14,6 +14,20 @@ class DailyPriceTests(unittest.TestCase):
         self.assertEqual(p.completion_receipt_time(started,False,lambda zone: completed),completed)
         self.assertEqual(p.completion_receipt_time(started,True,lambda zone: completed),started)
 
+    def test_recovered_ticker_note_clears_without_touching_system_note(self):
+        book=Mock()
+        desk=Mock()
+        desk.id=42
+        desk.get.return_value=[["PSX — HOLD 13%"],["FANG — HOLD 12%"],
+                               ["SYSTEM — ⚠ BACKEND"]]
+        book.worksheet.return_value=desk
+        p.mark_fault_notes(book,{"PSX":"DAILY CLOSES!A5:J5: stale"})
+        requests=desk.spreadsheet.batch_update.call_args.args[0]["requests"]
+        self.assertEqual(len(requests),2)
+        self.assertEqual(requests[0]["updateCells"]["rows"][0]["values"][0]["note"],
+                         "DAILY CLOSES!A5:J5: stale")
+        self.assertEqual(requests[1]["updateCells"]["rows"][0]["values"][0],{})
+
     def test_holiday_and_early_close(self):
         zone = ZoneInfo("America/New_York")
         self.assertEqual(p.last_completed(datetime(2026,11,26,19,tzinfo=zone),zone,p.clock(16)),date(2026,11,25))
