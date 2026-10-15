@@ -8,6 +8,12 @@ import ft_price_writer as p
 
 
 class DailyPriceTests(unittest.TestCase):
+    def test_final_receipt_uses_completion_not_started_time(self):
+        started=datetime(2026,10,15,13,50,tzinfo=p.TORONTO)
+        completed=datetime(2026,10,15,13,54,tzinfo=p.TORONTO)
+        self.assertEqual(p.completion_receipt_time(started,False,lambda zone: completed),completed)
+        self.assertEqual(p.completion_receipt_time(started,True,lambda zone: completed),started)
+
     def test_holiday_and_early_close(self):
         zone = ZoneInfo("America/New_York")
         self.assertEqual(p.last_completed(datetime(2026,11,26,19,tzinfo=zone),zone,p.clock(16)),date(2026,11,25))
