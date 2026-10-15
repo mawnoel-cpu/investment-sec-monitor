@@ -209,7 +209,7 @@ def main(now=None):
                 "fields": "userEnteredValue,note,userEnteredFormat.backgroundColor"}},
             {"repeatCell": {"range": {"sheetId": health.id, "startRowIndex": dest-1, "endRowIndex": dest, "startColumnIndex": 0, "endColumnIndex": 1},
                 "cell": {"userEnteredFormat": {"numberFormat": {"type": "DATE_TIME", "pattern": "dd mmm yyyy HH:mm"}}},
-                "fields": "userEnteredFormat.numberFormat"}
+                "fields": "userEnteredFormat.numberFormat"}}
         ]})
         actual = desk.get("A13:B13", value_render_option="FORMATTED_VALUE")
         if not actual or actual[0][:2] != [stamp, desk_text]:
