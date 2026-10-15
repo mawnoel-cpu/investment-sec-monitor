@@ -32,6 +32,30 @@ class DailyPriceTests(unittest.TestCase):
         sheets["Portfolio"].get.return_value=[["PSX","Phillips",.13,.13]]
         self.assertEqual(set(p.tracking(book)),{"PSX","CRWV","SPY","WMT","CRAK","XOP"})
 
+    def test_existing_verified_archive_can_certify_same_session(self):
+        d=date(2026,10,14)
+        good=[p.serial(d),"BHP:LSE","LON:BHP",3165.0,"GBX","LSE",
+              "https://query1.finance.yahoo.com/v8/finance/chart/BHP.L",
+              p.serial(datetime(2026,10,14,18,tzinfo=p.TORONTO)),
+              "VERIFIED","2026-10-14|BHP:LSE"]
+        ws=Mock()
+        ws.get.return_value=[good]
+        keys,prices,last,verified=p.existing_keys(ws)
+        self.assertEqual(last,5)
+        self.assertEqual(prices["2026-10-14|BHP:LSE"],3165.0)
+        self.assertIn("2026-10-14|BHP:LSE",verified)
+
+        # Any missing quality, wrong date/venue, or absent URL prevents
+        # an old or unverified row from masking a missing upstream close.
+        for field,bad in ((0,p.serial(date(2026,10,13))),
+                          (4,"GBP"),(5,"US"),(6,""),
+                          (8,"Unverified"),(3,0)):
+            damaged=list(good)
+            damaged[field]=bad
+            ws.get.return_value=[damaged]
+            _,_,_,trusted=p.existing_keys(ws)
+            self.assertNotIn("2026-10-14|BHP:LSE",trusted)
+
     def test_market_closes_are_exchange_specific(self):
         now = datetime(2026, 10, 14, 14, 10, tzinfo=ZoneInfo("America/Toronto"))
         self.assertEqual(p.last_completed(now, ZoneInfo("America/New_York"), p.clock(16)), date(2026,10,13))
