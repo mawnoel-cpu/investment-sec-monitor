@@ -80,8 +80,8 @@ class DailyPriceTests(unittest.TestCase):
         y=[(date(2026,10,13),100.0,"https://query1.finance.yahoo.com/")]
         alt=[(date(2026,10,13),99.0,"https://stooq.com/"),
              (date(2026,10,14),98.0,"https://stooq.com/")]
-        with patch.object(p,"yahoo_history",return_value=(y,"stale Yahoo")) as yh, \\
-             patch.object(p,"stooq_history",return_value=(alt,"")) as st:
+        with (patch.object(p,"yahoo_history",return_value=(y,"stale Yahoo")) as yh,
+              patch.object(p,"stooq_history",return_value=(alt,"")) as st):
             *_,bars,end,err=p.fetch_ticker("SPY","NYSEARCA:SPY",now)
         yh.assert_called_once_with("SPY",now,required_session=date(2026,10,14))
         st.assert_called_once()
@@ -92,8 +92,8 @@ class DailyPriceTests(unittest.TestCase):
     def test_no_provider_current_close_remains_unverified(self):
         now=datetime(2026,10,14,20,tzinfo=p.TORONTO)
         y=[(date(2026,10,13),100.0,"https://query1.finance.yahoo.com/")]
-        with patch.object(p,"yahoo_history",return_value=(y,"stale")), \\
-             patch.object(p,"stooq_history",return_value=([],"Stooq stale")):
+        with (patch.object(p,"yahoo_history",return_value=(y,"stale")),
+              patch.object(p,"stooq_history",return_value=([],"Stooq stale"))):
             *_,bars,end,err=p.fetch_ticker("SPY","NYSEARCA:SPY",now)
         self.assertNotIn(end,bars)
         self.assertIn("Stooq stale",err)
