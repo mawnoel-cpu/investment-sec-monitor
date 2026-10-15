@@ -19,7 +19,7 @@ This directory is reserved for the container-bound Google Apps Script project at
 `.clasp.json` and OAuth credential files are intentionally git-ignored. The Apps Script source files and `appsscript.json` manifest can be committed normally.
 
 
-## Metadata queue — installed; manual scan verified; schedule pending
+## Metadata queue — installed; manual scan verified; time-based trigger present
 
 The module `FT_Gmail_Queue.gs` is installed as a separate file in the spreadsheet-bound project. Its original files were backed up privately and verified unchanged. This directory is not a complete mirror of that project: do **not** replace it or run `clasp push` blindly.
 
@@ -49,4 +49,5 @@ The module now stores formula-like email subjects as literal text and logs colle
 - The next user-run collection started at 06:31:10 Toronto and completed in 38.012 seconds. The supplied Apps Script execution record shows `COMPLETE DISCOVERY`, `queued: 51`, `examined: 76`, `duplicates: 0`, and `lastSearchedBeforeUtc: 2026-10-15T10:27:29.000Z`.
 - Independent workbook readback after that execution confirms 92 unique message IDs, zero duplicate IDs and all 92 statuses `PENDING`. These are discovery metadata, not verified investment research.
 - Initial scan and resumable writes are verified. Duplicate protection also passed the offline replay test; a full live replay of a completed sweep has not yet been observed.
-- Scheduling remains pending: run `ftGmailQueueInstallTrigger` once, then verify the `ftGmailQueueCollect` time-driven trigger and its 30-minute interval. A scheduled execution has not yet been observed. Browser controls were unavailable during this final stage, so no trigger was installed by the assistant.
+- At 06:50 Toronto, the user's Apps Script **Triggers** screenshot shows one owner-visible trigger: handler `ftGmailQueueCollect`, deployment `Head`, event `Time-based`. `Last run` and error rate are still dashes, so a scheduled execution has not yet been observed. Do not add a duplicate trigger.
+- The installed module's `ftGmailQueueInstallTrigger` creates a 30-minute schedule. The trigger-list screenshot confirms its handler and event type but does not show the configured interval. Browser controls remain unavailable, so the assistant has not independently opened the trigger settings.
