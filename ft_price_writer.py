@@ -322,11 +322,13 @@ def mark_fault_notes(book,issues):
         if not row or " — " not in row[0]:
             continue
         ticker=row[0].split(" — ",1)[0]
-        # Do not erase research/review diagnostics (especially SYSTEM/B13).
-        if ticker not in issues:
+        # SYSTEM/B13 belongs to the health writer. Individual ticker notes
+        # belong to this price writer, so clear a stale price fault after a
+        # verified recovery instead of leaving a false warning behind.
+        if ticker == "SYSTEM":
             continue
-        text=issues[ticker]
-        requests.append({"updateCells":{"range":{"sheetId":desk.id,"startRowIndex":i+1,"endRowIndex":i+2,"startColumnIndex":1,"endColumnIndex":2},"rows":[{"values":[{"note":text}]}],"fields":"note"}})
+        cell={"note":issues[ticker]} if ticker in issues else {}
+        requests.append({"updateCells":{"range":{"sheetId":desk.id,"startRowIndex":i+1,"endRowIndex":i+2,"startColumnIndex":1,"endColumnIndex":2},"rows":[{"values":[cell]}],"fields":"note"}})
     if requests:
         desk.spreadsheet.batch_update({"requests":requests})
 
