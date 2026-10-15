@@ -118,8 +118,17 @@ def main(now=None):
     rows = health.get("A44:I1000", value_render_option="UNFORMATTED_VALUE")
     dest = 44 + len(rows)
     link = "https://github.com/mawnoel-cpu/investment-sec-monitor/actions/runs/" + os.getenv("GITHUB_RUN_ID", "local")
-    all_saved = price_state == "SAVED" and research.startswith("SAVED ") and review == "SAVED"
-    details = " | ".join(faults) or ("All required writes verified; broader research remains Partial" if all_saved and research.endswith("PARTIAL") else "All required writes verified" if all_saved else "Waiting for unfinished stages; not yet due. This is not an end-to-end completion receipt.")
+    all_saved = price_state == "SAVED" and research.startswith("SAVED ") and review in {"SAVED", "NEXT-DAY INPUTS"}
+    if faults:
+        details = " | ".join(faults)
+    elif all_saved:
+        details = "All required writes verified"
+        if research.endswith("PARTIAL"):
+            details += "; broader research remains Partial"
+        if review == "NEXT-DAY INPUTS":
+            details += "; post-cutoff research queued for next trade-day review"
+    else:
+        details = "Waiting for unfinished stages; not yet due. This is not an end-to-end completion receipt."
     window = health.get("B37", value_render_option="FORMATTED_VALUE")
     delivery = window[0][0] if window and window[0] else "UNVERIFIED"
     if "MISSED" in delivery:
