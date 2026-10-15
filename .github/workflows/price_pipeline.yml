@@ -16,12 +16,16 @@ on:
     - cron: "20 16 * 10 1-5"   # 12:20 Toronto redundancy for delayed Actions queues
     - cron: "50 17 * 10 1-5"   # 13:50 Toronto
     - cron: "50 18 * 10 1-5"   # 14:50 persistence audit before 15:15 decision
-    - cron: "05 22 * 10 1-5"   # 18:05 Toronto
+    - cron: "05 22 * 10 1-5"   # 18:05 Toronto — initial certified-close attempt
+    - cron: "05 23 * 10 1-5"   # 19:05 Toronto — delayed-provider retry
+    - cron: "05 00 * 10 2-6"   # 20:05 Toronto (next UTC day) — final retry
     # 1–27 November 2026 in EST.
     - cron: "20 17 1-27 11 1-5"  # 12:20 Toronto redundancy
     - cron: "50 18 1-27 11 1-5"  # 13:50 Toronto
     - cron: "50 19 1-27 11 1-5"  # 14:50 persistence audit before decision
     - cron: "05 23 1-27 11 1-5"  # 18:05 Toronto
+    - cron: "05 00 2-28 11 2-6"  # 19:05 Toronto (next UTC day)
+    - cron: "05 01 2-28 11 2-6"  # 20:05 Toronto (next UTC day)
 
 permissions:
   contents: read
@@ -44,14 +48,14 @@ jobs:
       - name: Offline data/session validation
         run: python tests/run_offline.py
       - name: Update verified FT prices, diagnosed coverage and decision-cell notes
-        if: github.ref == 'refs/heads/main'
+        if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
         run: |
-          python ft_price_writer.py ${{ (github.event.schedule == '05 22 * 10 1-5' || github.event.schedule == '05 23 1-27 11 1-5') && 'close' || 'pretrade' }}
+          python ft_price_writer.py ${{ (github.event.schedule == '05 22 * 10 1-5' || github.event.schedule == '05 23 * 10 1-5' || github.event.schedule == '05 00 * 10 2-6' || github.event.schedule == '05 23 1-27 11 1-5' || github.event.schedule == '05 00 2-28 11 2-6' || github.event.schedule == '05 01 2-28 11 2-6') && 'close' || 'pretrade' }}
 
       - name: Verify durable research and review receipts
-        if: always() && github.ref == 'refs/heads/main'
+        if: always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
         run: python ft_pipeline_health.py
