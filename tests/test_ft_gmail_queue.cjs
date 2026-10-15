@@ -19,7 +19,8 @@ function environment(subjects,opts={}) {
       ["PSX","Phillips 66",.13,.13],
       ["MSFT","Microsoft",.15,.15],
       ["META","Meta Platforms A",.05,.12],
-      ["TLW:LSE","Tullow Oil PLC",.08,.08]
+      ["TLW:LSE","Tullow Oil PLC",.08,.08],
+      ["BHP:LSE","BHP Group",.10,.10]
     ],
     "CANDIDATE POOL":null,
     "Sources":null,
