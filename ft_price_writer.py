@@ -43,6 +43,11 @@ def serial(value):
     return (value-EPOCH).total_seconds()/86400
 
 
+def completion_receipt_time(started_at, supplied_now, clock_fn=datetime.now):
+    """Use wall-clock completion time in production; keep injected runs stable."""
+    return started_at if supplied_now else clock_fn(TORONTO)
+
+
 def day_of(value):
     if isinstance(value, (float,int)):
         return (EPOCH+timedelta(days=float(value))).date()
@@ -317,16 +322,19 @@ def mark_fault_notes(book,issues):
         if not row or " — " not in row[0]:
             continue
         ticker=row[0].split(" — ",1)[0]
-        # Do not erase research/review diagnostics (especially SYSTEM/B13).
-        if ticker not in issues:
+        # SYSTEM/B13 belongs to the health writer. Individual ticker notes
+        # belong to this price writer, so clear a stale price fault after a
+        # verified recovery instead of leaving a false warning behind.
+        if ticker == "SYSTEM":
             continue
-        text=issues[ticker]
-        requests.append({"updateCells":{"range":{"sheetId":desk.id,"startRowIndex":i+1,"endRowIndex":i+2,"startColumnIndex":1,"endColumnIndex":2},"rows":[{"values":[{"note":text}]}],"fields":"note"}})
+        cell={"note":issues[ticker]} if ticker in issues else {}
+        requests.append({"updateCells":{"range":{"sheetId":desk.id,"startRowIndex":i+1,"endRowIndex":i+2,"startColumnIndex":1,"endColumnIndex":2},"rows":[{"values":[cell]}],"fields":"note"}})
     if requests:
         desk.spreadsheet.batch_update({"requests":requests})
 
 
 def main(mode="close",now=None):
+    supplied_now = now is not None
     now=now or datetime.now(TORONTO)
     if now.date()>date(2026,11,27):
         print(json.dumps({"status":"Skipped","reason":"FT Game ended"}))
@@ -398,7 +406,10 @@ def main(mode="close",now=None):
         ws.spreadsheet.batch_update({"requests":[{"repeatCell":{"range":{"sheetId":ws.id,"startRowIndex":last,"endRowIndex":last+len(rows),"startColumnIndex":col,"endColumnIndex":col+1},"cell":{"userEnteredFormat":{"numberFormat":{"type":fmt,"pattern":pat}}},"fields":"userEnteredFormat.numberFormat"}} for col,fmt,pat in ((0,"DATE","dd mmm yyyy"),(7,"DATE_TIME","dd mmm yyyy HH:mm"))]})
     state="Complete" if success==len(tracked) and not bad else "Partial" if success else "Failed"
     receipt = f"run={os.getenv('GITHUB_RUN_ID', 'local')}; sha={os.getenv('GITHUB_SHA', 'local')}; rows={len(rows)}; archived_same_session_reused={reused}; price readback verified"
-    save_log(ws,now,mode,state,len(tracked),bad + [receipt], row_number=logrow)
+    # The final Complete/Partial/Failed receipt must carry completion time.
+    # A Started timestamp or scheduled time is not proof that the write ended.
+    completed_at = completion_receipt_time(now, supplied_now)
+    save_log(ws,completed_at,mode,state,len(tracked),bad + [receipt], row_number=logrow)
     mark_fault_notes(book,faults)
     # Explicit readback before reporting a successful write.
     log=ws.get("L5:P200",value_render_option="UNFORMATTED_VALUE")

@@ -110,6 +110,29 @@ class PersistenceTests(unittest.TestCase):
                       h.system_state_text([],"SAVED PARTIAL","SAVED","MISSED"))
         self.assertIn("VERIFIED",h.system_state_text([],"SAVED COMPLETE","SAVED","ON TIME"))
 
+    def test_late_recovery_preserves_exact_missed_deadlines(self):
+        now=datetime(2026,10,15,14,50,tzinfo=p.TORONTO)
+        day=int(p.serial(now))
+        intake=[[day+14.25/24,"Partial",108,0,2,0,1,"Finalized",day+14.55/24]]
+        prices=[[day+14.60/24,"close","Complete",78,"verified"]]
+        reviews=[[day+14.60/24,"Daily",day+14.60/24,"portfolio","risk","HOLD",
+                  "sources","audit","limits","Daily:2026-10-15"]]
+        status=h.delivery_status(now,prices,intake,reviews)
+        self.assertIn("MISSED 2026-10-15",status)
+        self.assertIn("Sources!I46=14:33 >13:40",status)
+        self.assertIn("DAILY CLOSES!L5=14:36 >14:15",status)
+        self.assertNotIn("review",status)
+
+    def test_first_complete_price_receipt_after_1220_is_on_time(self):
+        now=datetime(2026,10,15,14,50,tzinfo=p.TORONTO)
+        day=int(p.serial(now))
+        intake=[[day+13.25/24,"Partial",1,0,0,0,0,"Finalized",day+13.5/24]]
+        prices=[[day+12.5/24,"pretrade","Complete",78,"verified"],
+                [day+14.6/24,"close","Complete",78,"late retry"]]
+        reviews=[[day+14.6/24,"Daily",day+14.6/24,"portfolio","risk","HOLD",
+                  "sources","audit","limits","Daily:2026-10-15"]]
+        self.assertTrue(h.delivery_status(now,prices,intake,reviews).startswith("ON TIME"))
+
     def test_snapshot_requires_real_date_action_and_coverage(self):
         for column, bad in ((0, 1), (0, "bad"), (10, ""), (18, "")):
             f=list(self.fixture());f[3][0][column]=bad

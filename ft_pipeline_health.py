@@ -4,7 +4,7 @@ This runs independently in Actions, including after a collector failure. It
 records exact broken cells and makes a missing/Started-only write fail visibly.
 """
 from collections import Counter
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 import json
 import os
 import re
@@ -76,6 +76,78 @@ def evaluate(now, intake, reviews, snapshots, required, verified):
     if not complete and now.time() >= time(14, 45):
         faults.append(f"{location}: review {review_state}; missing/duplicate snapshots {','.join(missing) or 'none'}; invalid timestamp/action/coverage {','.join(invalid) or 'none'}")
     return research, review_state, faults
+
+
+def delivery_status(now, price_logs, intake, reviews):
+    """Persist whether each decision-window write met its own deadline.
+
+    A later successful write clears the live fault, but cannot turn a missed
+    research, price, or review deadline into an on-time delivery.
+    """
+    day = int(prices.serial(now))
+    today = now.date().isoformat()
+    missed = []
+
+    research_rows = [
+        (n, r) for n, r in enumerate(intake, 46)
+        if isinstance(value(r, 0), (int, float)) and int(value(r, 0)) == day
+    ]
+    research_deadline = day + (13 * 60 + 40) / 1440
+    finalized_research = [
+        (n, r) for n, r in research_rows
+        if value(r, 1) in {"Complete", "Partial"}
+        and not str(value(r, 7)).lower().startswith("started")
+        and isinstance(value(r, 8), (int, float))
+        and value(r, 0) <= value(r, 8)
+    ]
+    research_on_time = any(value(r, 8) <= research_deadline
+                           for _, r in finalized_research)
+    if now.time() >= time(13, 40) and not research_on_time:
+        if finalized_research:
+            n, row = min(finalized_research, key=lambda x: value(x[1], 8))
+            stamp = value(row, 8)
+            shown = (prices.EPOCH + timedelta(days=float(stamp))).strftime("%H:%M")
+            missed.append(f"research Sources!I{n}={shown} >13:40")
+        else:
+            missed.append("research Sources!I46:I1000 missing by13:40")
+
+    price_deadline = day + (14 * 60 + 15) / 1440
+    price_start = day + (12 * 60 + 20) / 1440
+    price_rows = [
+        (n, r) for n, r in enumerate(price_logs, 5)
+        if isinstance(value(r, 0), (int, float)) and int(value(r, 0)) == day
+        and value(r, 2) == "Complete"
+    ]
+    price_on_time = any(price_start <= value(r, 0) <= price_deadline for _, r in price_rows)
+    if now.time() >= time(14, 15) and not price_on_time:
+        eligible_price_rows = [(n, r) for n, r in price_rows
+                               if value(r, 0) >= price_start]
+        if eligible_price_rows:
+            n, row = min(eligible_price_rows, key=lambda x: value(x[1], 0))
+            shown = (prices.EPOCH + timedelta(days=float(value(row, 0)))).strftime("%H:%M")
+            missed.append(f"price DAILY CLOSES!L{n}={shown} >14:15")
+        else:
+            missed.append("price DAILY CLOSES!L5:P200 missing by14:15")
+
+    key = "Daily:" + today
+    review_rows = [(n, r) for n, r in enumerate(reviews, 8) if value(r, 9) == key]
+    review_start = day + (14 * 60 + 20) / 1440
+    review_deadline = day + (14 * 60 + 45) / 1440
+    review_on_time = len(review_rows) == 1 and isinstance(value(review_rows[0][1], 0), (int, float)) \
+        and review_start <= value(review_rows[0][1], 0) <= review_deadline
+    if now.time() >= time(14, 45) and not review_on_time:
+        if review_rows and isinstance(value(review_rows[0][1], 0), (int, float)):
+            n, row = review_rows[0]
+            stamp = (prices.EPOCH + timedelta(days=float(value(row, 0)))).strftime("%H:%M")
+            missed.append(f"review Reviews!A{n}={stamp} outside14:20-14:45")
+        else:
+            missed.append("review Reviews!A8:J1001 missing/duplicate by14:45")
+
+    if missed:
+        return f"MISSED {today} — " + "; ".join(missed)
+    if now.time() >= time(14, 45):
+        return f"ON TIME {today} — research<=13:40; price<=14:15; review14:20-14:45"
+    return f"DUE BEFORE15:15 {today} — research13:40; price14:15; review14:45"
 
 
 def audit_phase(stamp):
@@ -153,8 +225,8 @@ def main(now=None):
     latest = max((r for r in logs if r), key=lambda r: value(r, 0, 0), default=[])
     if value(latest, 2) != "Complete":
         faults.append("DAILY CLOSES!L5:P200: latest price run not Complete")
-    if now.time() >= time(14, 15) and value(latest, 0, 0) < int(prices.serial(now)) + (13*60+50)/1440:
-        faults.append("DAILY CLOSES!L5:P200: fresh13:50 pretrade receipt missing")
+    if now.time() >= time(14, 15) and value(latest, 0, 0) < int(prices.serial(now)) + (12*60+20)/1440:
+        faults.append("DAILY CLOSES!L5:P200: fresh post12:20 pretrade receipt missing")
     price_state = "FAILED" if faults else "SAVED"
     portfolio = book.worksheet("Portfolio").get("A8:D19", value_render_option="UNFORMATTED_VALUE")
     required = {r[0] for r in portfolio if len(r) >= 3 and isinstance(r[2], (int, float)) and r[2] > 0}
@@ -162,7 +234,9 @@ def main(now=None):
     source = book.worksheet("Sources")
     b39 = source.get("B39", value_render_option="UNFORMATTED_VALUE")
     verified = b39[0][0] if b39 and b39[0] else 0
-    research, review, issues = evaluate(now, source.get("A46:I1000", value_render_option="UNFORMATTED_VALUE"), book.worksheet("Reviews").get("A8:J1001", value_render_option="UNFORMATTED_VALUE"), book.worksheet("Decision History").get("A5:S1000", value_render_option="UNFORMATTED_VALUE"), required, verified)
+    intake = source.get("A46:I1000", value_render_option="UNFORMATTED_VALUE")
+    reviews = book.worksheet("Reviews").get("A8:J1001", value_render_option="UNFORMATTED_VALUE")
+    research, review, issues = evaluate(now, intake, reviews, book.worksheet("Decision History").get("A5:S1000", value_render_option="UNFORMATTED_VALUE"), required, verified)
     faults.extend(issues)
     health = book.worksheet("BACKEND HEALTH")
     if health.row_count < 1000:
@@ -193,8 +267,13 @@ def main(now=None):
             details += "; post-cutoff research queued for next trade-day review"
     else:
         details = "Waiting for unfinished stages; not yet due. This is not an end-to-end completion receipt."
+    delivery = delivery_status(now, logs, intake, reviews)
     window = health.get("B37", value_render_option="FORMATTED_VALUE")
-    delivery = window[0][0] if window and window[0] else "UNVERIFIED"
+    persisted_delivery = window[0][0] if window and window[0] else ""
+    if persisted_delivery != delivery:
+        health.update(range_name="B37", values=[[delivery]], value_input_option="RAW")
+        if health.get("B37", value_render_option="FORMATTED_VALUE") != [[delivery]]:
+            raise RuntimeError("BACKEND HEALTH!B37: delivery-state readback mismatch")
     if "MISSED" in delivery:
         details += " | Prewindow delivery MISSED: BACKEND HEALTH!B37, Sources!I46:I1000, Reviews!A8:J1001, DAILY CLOSES!L5:P200. Current recovery does not backdate the missed window."
     record = [prices.serial(now), price_state, research, review, len(tracked), len(required), details[:48000], link, os.getenv("GITHUB_SHA", "local")]
