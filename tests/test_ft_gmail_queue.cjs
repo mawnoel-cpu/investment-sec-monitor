@@ -83,6 +83,7 @@ function environment(subjects,opts={}) {
   }
   const context={
     Date:FakeDate, JSON, Object, String, RegExp, Number, Math, Error,
+    console:{log(){}},
     SpreadsheetApp:{
       openById(){return workbook;},
       flush(){counts.flush++;},
@@ -188,3 +189,14 @@ test("trigger installation is explicit and does not follow collection",()=>{
   assert.match(e.context.ftGmailQueueInstallTrigger().status,/INSTALLED/);
   assert.equal(e.counts.triggers,1);
 });
+
+test("email subjects cannot become executable spreadsheet formulas",()=>{
+  const e=environment(['=IMPORTXML("https://example.invalid","//x")',
+    '  =1+1','+SUM(1,2)','@SUM(1,2)','-1+2','Ordinary market update']);
+  e.context.ftGmailQueueCollect();
+  const rows=e.sheets["FT GMAIL QUEUE"].grid.slice(1);
+  assert.equal(rows.length,6);
+  rows.slice(0,5).forEach(row=>assert.ok(row[5].startsWith("'")));
+  assert.equal(rows[5][5],'Ordinary market update');
+});
+

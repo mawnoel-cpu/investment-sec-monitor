@@ -21,6 +21,12 @@ var FT_GMAIL_QUEUE = Object.freeze({
 });
 
 function ftGmailQueueCollect() {
+  var result = ftQueueCollect_();
+  console.log(JSON.stringify(result));
+  return result;
+}
+
+function ftQueueCollect_() {
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(1000)) return {status:"BUSY", reason:"Collector lock held"};
   try {
@@ -57,7 +63,7 @@ function ftGmailQueueCollect() {
           var stamp = new Date().toISOString();
           added.push([id,new Date(when*1000).toISOString(),classified.priority,
             classified.tickers.join(","),classified.domain,
-            String(msg.getSubject() || "").slice(0,240),"PENDING",0,stamp,
+            ftQueueLiteral_(String(msg.getSubject() || "").slice(0,240)),"PENDING",0,stamp,
             "Subject/sender triage only; no original source verified"]);
           existing[id] = true;
         }
@@ -99,6 +105,12 @@ function ftGmailQueueCollect() {
       duplicates:duplicates,nextOffset:cursor.offset,
       lastSearchedBeforeUtc:new Date(cursor.until*1000).toISOString()};
   } finally {lock.releaseLock();}
+}
+
+// Subjects are untrusted email metadata, never executable spreadsheet formulas.
+function ftQueueLiteral_(value) {
+  var text = String(value == null ? "" : value);
+  return /^\s*[=+@-]/.test(text) ? "'" + text : text;
 }
 
 function ftQueueSheet_(book) {
@@ -212,6 +224,12 @@ function ftQueueCursor_(props,book,nowSecs) {
 
 /** Read-only queue health, independent of research and trade scoring. */
 function ftGmailQueueStatus() {
+  var result = ftQueueStatus_();
+  console.log(JSON.stringify(result));
+  return result;
+}
+
+function ftQueueStatus_() {
   var sheet=SpreadsheetApp.openById(FT_GMAIL_QUEUE.spreadsheetId)
     .getSheetByName(FT_GMAIL_QUEUE.sheet);
   if (!sheet) return {status:"NOT DEPLOYED"};
@@ -243,3 +261,4 @@ function ftGmailQueueRemoveTrigger() {
   triggers.forEach(function(t){ScriptApp.deleteTrigger(t);});
   return {removed:triggers.length};
 }
+

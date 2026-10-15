@@ -36,3 +36,9 @@ Offline tests: `node --test tests/test_ft_gmail_queue.cjs`, also run by GitHub's
 5. Only after review, manually run `ftGmailQueueInstallTrigger` for a 30-minute schedule. `ftGmailQueueRemoveTrigger` removes it.
 
 Until activation and readback testing, the existing scheduled **FT Research Intake** remains responsible for Gmail discovery. After activation, integrate its P1/P2 discovery with the queue while retaining broader searches as a catch-all. The queue does not mark items screened or verified on its own. Keep sensitive authorization files outside GitHub.
+
+### Live integration checkpoint — 14 October 2026
+
+The bound project was opened through Extensions → Apps Script. Its original `Code.gs`, `SecCollector.gs`, `appsscript.json`, script properties and zero owner-visible triggers were backed up privately. The three original source/manifest files were read back after reload and matched the backup exactly. `FT_Gmail_Queue.gs` was added separately and also matched the tested source after reload.
+
+The module now stores formula-like email subjects as literal text and logs collection/status results for verification. All seven offline tests pass. The first manual run stopped at Google's one-time authorization prompt and was cancelled before collection. **Live collection is not verified and the 30-minute trigger is not installed.** Complete Google authorization, run and read back the queue, repeat for duplicate protection, and only then install its trigger. The existing Gmail/SEC writer shims remain disabled as before; no trades or Evidence changes were made by this integration.
