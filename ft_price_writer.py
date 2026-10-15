@@ -377,7 +377,7 @@ def main(mode="close",now=None):
                 for d,(price,url) in bars.items():
                     key=f"{d.isoformat()}|{ticker}"
                     if key in keys:
-                        if key not in archived_verified:
+                        if d == expected and key not in archived_verified:
                             bad.append(ticker+f": stored session {d} not independently VERIFIED at DAILY CLOSES!A:J")
                             faults[ticker]=f"UNVERIFIED ARCHIVE: DAILY CLOSES!A:J {key}; unsafe to reuse without validation"
                         elif key in original and abs(original[key]/price-1)>0.025:
