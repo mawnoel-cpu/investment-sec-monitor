@@ -226,8 +226,13 @@ def tracking(book):
 
 
 def existing_keys(ws):
+    """Distinguish ordinary dedup keys from independently certified archive rows.
+
+    A date/ticker string alone is not proof that an EOD session was verified.
+    """
     values=ws.get(f"A5:J{DATA_LAST_ROW}",value_render_option="UNFORMATTED_VALUE")
     keys=set()
+    verified=set()
     last=4
     prices={}
     for i,r in enumerate(values,start=5):
@@ -237,12 +242,21 @@ def existing_keys(ws):
         if len(r)>=10 and r[9]:
             key=str(r[9]).strip()
             keys.add(key)
-            if len(r)>3:
-                try:
-                    prices[key]=float(r[3])
-                except (TypeError,ValueError):
-                    pass
-    return keys,prices,last
+            try:
+                p=float(r[3])
+                prices[key]=p
+                session,ticker=key.split("|",1)
+                expected=date.fromisoformat(session)
+                venue,unit,_,_=venue_info(ticker,str(r[2]))
+                if (r[8]=="VERIFIED" and isinstance(r[0],(int,float)) and
+                    int(r[0])==int(serial(expected)) and
+                    r[1]==ticker and r[4]==unit and r[5]==venue and
+                    isinstance(r[6],str) and r[6].startswith("https://") and
+                    math.isfinite(p) and p>0):
+                    verified.add(key)
+            except (ValueError,TypeError,IndexError):
+                pass
+    return keys,prices,last,verified
 
 
 def get_google_fallback(book,ticker,now,gs):
@@ -326,8 +340,8 @@ def main(mode="close",now=None):
         ws.resize(rows=DATA_LAST_ROW)
     ws.update(range_name="L4:P4", values=[LOG_COLUMNS], value_input_option="RAW")
     logrow = save_log(ws, now, mode, "Partial", len(tracked), ["Started; price data/write verification pending"])
-    keys,original,last=existing_keys(ws)
-    rows=[]; faults={}; bad=[]; success=0
+    keys,original,last,archived_verified=existing_keys(ws)
+    rows=[]; faults={}; bad=[]; success=0; reused=0
     with ThreadPoolExecutor(max_workers=4) as pool:
         futures={pool.submit(fetch_ticker,t,gs,now):t for t,gs in tracked.items()}
         for fut in as_completed(futures):
@@ -338,20 +352,35 @@ def main(mode="close",now=None):
                     fallback,extra=get_google_fallback(book,ticker,now,gs)
                     bars={dt:(p,url) for dt,p,url in fallback}
                     err=err+"; "+extra
+                session_key=f"{expected.isoformat()}|{ticker}"
+                archive_current=session_key in archived_verified
                 if not bars:
+                    if archive_current:
+                        success+=1
+                        reused+=1
+                        continue
                     faults[ticker]=f"BACKEND PRICE GAP: DAILY CLOSES!A:J ticker {ticker}; PRICE MONITOR!B:S Google quote missing/uncertified. {err[:180]}"
                     bad.append(ticker+": no verified daily close; "+err[:110])
                     continue
                 latest=max(bars)
                 if latest != expected:
-                    bad.append(ticker+f": latest {latest} vs completed {expected}")
-                    faults[ticker]=f"STALE PRICE: DAILY CLOSES!A:J latest {latest}, expected by {expected}. Live Google quote PRICE MONITOR!B:S requires verification."
+                    if archive_current:
+                        # Reuse an actual prior VERIFIED close for this same
+                        # completed session, not a live price or old date.
+                        success+=1
+                        reused+=1
+                    else:
+                        bad.append(ticker+f": latest {latest} vs completed {expected}")
+                        faults[ticker]=f"STALE PRICE: DAILY CLOSES!A:J latest {latest}, expected by {expected}. Live Google quote PRICE MONITOR!B:S requires verification."
                 else:
                     success+=1
                 for d,(price,url) in bars.items():
                     key=f"{d.isoformat()}|{ticker}"
                     if key in keys:
-                        if key in original and abs(original[key]/price-1)>0.025:
+                        if key not in archived_verified:
+                            bad.append(ticker+f": stored session {d} not independently VERIFIED at DAILY CLOSES!A:J")
+                            faults[ticker]=f"UNVERIFIED ARCHIVE: DAILY CLOSES!A:J {key}; unsafe to reuse without validation"
+                        elif key in original and abs(original[key]/price-1)>0.025:
                             bad.append(ticker+f": source mismatch {d}, stored {original[key]} vs {price}")
                             faults[ticker]=f"PRICE MISMATCH: DAILY CLOSES!A:J for {key}. Preserve last verified historical price; compare independent source."
                         continue
@@ -368,7 +397,7 @@ def main(mode="close",now=None):
         # Native date and capture-time formatting for appended numeric serials.
         ws.spreadsheet.batch_update({"requests":[{"repeatCell":{"range":{"sheetId":ws.id,"startRowIndex":last,"endRowIndex":last+len(rows),"startColumnIndex":col,"endColumnIndex":col+1},"cell":{"userEnteredFormat":{"numberFormat":{"type":fmt,"pattern":pat}}},"fields":"userEnteredFormat.numberFormat"}} for col,fmt,pat in ((0,"DATE","dd mmm yyyy"),(7,"DATE_TIME","dd mmm yyyy HH:mm"))]})
     state="Complete" if success==len(tracked) and not bad else "Partial" if success else "Failed"
-    receipt = f"run={os.getenv('GITHUB_RUN_ID', 'local')}; sha={os.getenv('GITHUB_SHA', 'local')}; rows={len(rows)}; price readback verified"
+    receipt = f"run={os.getenv('GITHUB_RUN_ID', 'local')}; sha={os.getenv('GITHUB_SHA', 'local')}; rows={len(rows)}; archived_same_session_reused={reused}; price readback verified"
     save_log(ws,now,mode,state,len(tracked),bad + [receipt], row_number=logrow)
     mark_fault_notes(book,faults)
     # Explicit readback before reporting a successful write.
@@ -376,7 +405,7 @@ def main(mode="close",now=None):
     latest=[r for r in log if r and r[0] not in ("",None)][-1]
     if str(latest[2])!=state or str(latest[1])!=mode:
         raise RuntimeError("price run-log write/readback mismatch")
-    print(json.dumps({"status":state,"tickers":len(tracked),"covered":success,"rows_added":len(rows),"failures":bad[:25]}))
+    print(json.dumps({"status":state,"tickers":len(tracked),"covered":success,"rows_added":len(rows),"verified_archive_reused":reused,"failures":bad[:25]}))
     if state!="Complete":
         raise RuntimeError("Incomplete verified price coverage; see DAILY CLOSES!L:P")
 
