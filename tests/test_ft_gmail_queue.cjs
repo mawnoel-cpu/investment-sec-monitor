@@ -27,7 +27,12 @@ function environment(subjects,opts={}) {
   };
   let corrupt=false, failWrite=Boolean(opts.failWrite);
   class FakeSheet {
-    constructor(name){this.name=name;this.grid=[];}
+    constructor(name){this.name=name;this.grid=[];this.maxRows=1000;}
+    getMaxRows(){return this.maxRows;}
+    insertRowsAfter(start,count){
+      assert.equal(start,this.maxRows);
+      this.maxRows+=count;
+    }
     getLastRow(){
       return this.grid.reduce((max,row,i)=>row?.some(x=>x!==undefined && x!=="") ? i+1:max,0);
     }
@@ -142,6 +147,19 @@ test("75-thread cap saves cursor and next invocation resumes without duplicates"
   const c=e.context.ftGmailQueueCollect();
   assert.equal(c.queued,0);
   assert.equal(e.sheets["FT GMAIL QUEUE"].getLastRow(),82);
+});
+
+test("queue grows its grid before crossing the default 1,000 rows",()=>{
+  const subjects=Array.from({length:1025},(_,i)=>"MSFT earnings #"+i);
+  const e=environment(subjects);
+  let result;
+  for(let run=0;run<25;run++){
+    result=e.context.ftGmailQueueCollect();
+    if(result.status==="COMPLETE DISCOVERY") break;
+  }
+  assert.equal(result.status,"COMPLETE DISCOVERY");
+  assert.equal(e.sheets["FT GMAIL QUEUE"].getLastRow(),1026);
+  assert.ok(e.sheets["FT GMAIL QUEUE"].getMaxRows()>=1026);
 });
 
 test("failed append does not advance completed-sweep or offset checkpoint",()=>{
