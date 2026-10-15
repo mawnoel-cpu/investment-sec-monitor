@@ -105,8 +105,13 @@ def audit_signature(record):
     """Ignore per-run metadata; retain any exact issue/cell/coverage changes."""
     if not record or not isinstance(value(record, 0), (int, float)):
         return None
+    try:
+        counts = (int(float(value(record, 4))), int(float(value(record, 5))))
+    except (TypeError, ValueError, OverflowError):
+        counts = (str(value(record, 4)), str(value(record, 5)))
     return (int(value(record, 0)), audit_phase(value(record, 0)),
-            *[str(value(record, n)) for n in range(1, 7)])
+            str(value(record, 1)), str(value(record, 2)),
+            str(value(record, 3)), *counts, str(value(record, 6)))
 
 
 def should_append_audit(previous, proposed):
@@ -119,9 +124,11 @@ def system_state_text(faults, research, review, delivery):
         return "SYSTEM — ⚠ BACKEND: SEE CELL NOTE"
     if "MISSED" in str(delivery):
         return "SYSTEM — ⚠ BACKEND: PREWINDOW DELIVERY MISSED"
-    if research.endswith("PARTIAL") or review == "NEXT-DAY INPUTS":
-        return "SYSTEM — CHECKED; RESEARCH PARTIAL / NEXT-DAY INPUTS"
-    return "SYSTEM — VERIFIED: REQUIRED WRITES"
+    if research.startswith("SAVED ") and review in {"SAVED", "NEXT-DAY INPUTS"}:
+        if research.endswith("PARTIAL") or review == "NEXT-DAY INPUTS":
+            return "SYSTEM — CHECKED; RESEARCH PARTIAL / NEXT-DAY INPUTS"
+        return "SYSTEM — VERIFIED: REQUIRED WRITES"
+    return "SYSTEM — PENDING: NEXT DELIVERY CHECK"
 
 
 def main(now=None):
@@ -160,7 +167,16 @@ def main(now=None):
     health = book.worksheet("BACKEND HEALTH")
     if health.row_count < 1000:
         health.resize(rows=1000)
-    health.update(range_name="A43:I43", values=[["CHECKED AT", "PRICE WRITE", "RESEARCH WRITE", "REVIEW WRITE", "PRICE SYMBOLS", "REQUIRED SNAPSHOTS", "EXACT FAULT / COVERAGE", "GITHUB RUN", "COMMIT"]], value_input_option="RAW")
+    headers = ["CHECKED AT", "PRICE WRITE", "RESEARCH WRITE", "REVIEW WRITE",
+               "PRICE SYMBOLS", "REQUIRED SNAPSHOTS", "EXACT FAULT / COVERAGE",
+               "GITHUB RUN", "COMMIT"]
+    header_values = health.get("A43:I43", value_render_option="FORMATTED_VALUE")
+    if not header_values or not any(header_values[0]):
+        health.update(range_name="A43:I43", values=[headers], value_input_option="RAW")
+        if health.get("A43:I43", value_render_option="FORMATTED_VALUE") != [headers]:
+            raise RuntimeError("BACKEND HEALTH!A43:I43: header initialization readback mismatch")
+    elif header_values[0] != headers:
+        raise RuntimeError("BACKEND HEALTH!A43:I43: existing audit schema mismatch; not overwriting")
     rows = health.get("A44:I1000", value_render_option="UNFORMATTED_VALUE")
     filled = [(44 + i, r) for i, r in enumerate(rows) if r and value(r, 0)]
     previous_row, previous = filled[-1] if filled else (None, [])
