@@ -11,7 +11,7 @@ function environment(subjects,opts={}) {
   const props={};
   const pages=subjects.map((subject,i)=>{
     const when=Date.parse("2026-10-14T15:00:00Z") + i*1000;
-    return {getMessages(){return [message(subject, "ft.com", i,when)];}};
+    return {getMessages(){return [message(subject, opts.domains?.[i]||"ft.com", i,when)];}};
   });
   const sheets={};
   const defaults={
@@ -113,7 +113,8 @@ function message(subject,domain,i,when){
 }
 test("collector stages only relevant metadata, not Gmail mutations",()=>{
   const e=environment(["MSFT earnings beat","Reader dinner reservations",
-    "BHP:LSE bond credit risk","Semiconductor AI from a publisher"]);
+    "BHP:LSE bond credit risk","Semiconductor AI from a publisher"],
+    {domains:["ft.com","personal.test","ft.com","personal.test"]});
   const result=e.context.ftGmailQueueCollect();
   assert.equal(result.status,"COMPLETE DISCOVERY");
   const sheet=e.sheets["FT GMAIL QUEUE"];
