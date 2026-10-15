@@ -89,6 +89,20 @@ class PersistenceTests(unittest.TestCase):
         after[0]=p.serial(datetime(2026,10,15,13,50,tzinfo=p.TORONTO))
         self.assertTrue(h.should_append_audit(row,after))
 
+    def test_numeric_sheet_count_does_not_duplicate_issue(self):
+        stamp=p.serial(datetime(2026,10,14,14,50,tzinfo=p.TORONTO))
+        before=[stamp,"FAILED","SAVED PARTIAL","INCOMPLETE",78.0,16.0,
+                "Reviews!A16: persisted gap","run1","sha1"]
+        after=[stamp+.0002,"FAILED","SAVED PARTIAL","INCOMPLETE",78,16,
+               "Reviews!A16: persisted gap","run2","sha2"]
+        self.assertFalse(h.should_append_audit(before,after))
+
+    def test_before_deadlines_cannot_show_verified(self):
+        self.assertIn("PENDING",
+                      h.system_state_text([],"PENDING","PENDING","DUE"))
+        self.assertIn("PENDING",
+                      h.system_state_text([],"SAVED PARTIAL","PENDING","DUE"))
+
     def test_system_note_is_red_for_live_or_historical_failure(self):
         self.assertEqual(h.system_state_text(["Reviews!A16"],"SAVED PARTIAL","SAVED","DUE"),
                          "SYSTEM — ⚠ BACKEND: SEE CELL NOTE")
