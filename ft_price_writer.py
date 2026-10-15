@@ -80,9 +80,12 @@ def yahoo_symbol(ticker):
     return ticker.replace(":LSE",".L")
 
 
-def yahoo_history(ticker, now):
+def yahoo_history(ticker, now, required_session=None):
+    """Try both Yahoo hosts when the first has not published the required close."""
     symbol=yahoo_symbol(ticker)
     errors=[]
+    freshest=[]
+    freshest_day=date.min
     for host in ("query1.finance.yahoo.com","query2.finance.yahoo.com"):
         url=f"https://{host}/v8/finance/chart/{symbol}"
         try:
@@ -114,10 +117,15 @@ def yahoo_history(ticker, now):
                 rows.append((dt,round(float(price)*factor,5),response.url))
             if not rows:
                 raise ValueError("empty valid close history")
-            return rows, ""
+            latest=max(d for d,_,_ in rows)
+            if latest>freshest_day:
+                freshest, freshest_day=rows,latest
+            if required_session is None or latest>=required_session:
+                return rows, ""
+            errors.append(host+f": latest {latest}; expected {required_session}")
         except (requests.RequestException,ValueError,KeyError,IndexError,TypeError) as ex:
             errors.append(host+": "+str(ex)[:90])
-    return [], "; ".join(errors)
+    return freshest, "; ".join(errors)
 
 
 def stooq_history(ticker,now):
@@ -147,10 +155,17 @@ def stooq_history(ticker,now):
 def fetch_ticker(ticker,gs,now):
     venue,unit,zone,close_time=venue_info(ticker,gs)
     end=last_completed(now,zone,close_time)
-    bars,err=yahoo_history(ticker,now)
-    if not bars:
-        bars,err2=stooq_history(ticker,now)
-        err=(err+" | "+err2).strip(" |")
+    bars,err=yahoo_history(ticker,now,required_session=end)
+    latest=max((d for d,_,_ in bars if d<=end),default=date.min)
+    if latest<end:
+        # Yahoo can return valid older history but omit the latest session.
+        # Merge only later, independently dated Stooq bars, leaving Yahoo's
+        # historical observations intact to avoid adjusted-price conflicts.
+        alt,err2=stooq_history(ticker,now)
+        if alt:
+            bars.extend((d,p,url) for d,p,url in alt if latest<d<=end)
+        if err2:
+            err=(err+" | "+err2).strip(" |")
     valid={dt:(float(p),url) for dt,p,url in bars if dt<=end and dt.weekday()<5}
     # A holiday produces no close; last known session remains valid, not a zero return.
     return ticker,gs,venue,unit,valid,end,err
