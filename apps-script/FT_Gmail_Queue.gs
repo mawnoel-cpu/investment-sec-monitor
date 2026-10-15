@@ -64,8 +64,13 @@ function ftGmailQueueCollect() {
       }
       if (added.length) {
         var startRow=sheet.getLastRow()+1;
-        if (startRow + added.length - 1 > FT_GMAIL_QUEUE.maxRows)
+        var lastNeeded = startRow + added.length - 1;
+        if (lastNeeded > FT_GMAIL_QUEUE.maxRows)
           throw new Error("FT GMAIL QUEUE capacity exceeded; checkpoint retained");
+        // Native new tabs typically start at 1,000 rows. Grow deliberately
+        // before writing; never assume getRange creates missing grid rows.
+        if (lastNeeded > sheet.getMaxRows())
+          sheet.insertRowsAfter(sheet.getMaxRows(), lastNeeded-sheet.getMaxRows());
         sheet.getRange(startRow,1,added.length,FT_GMAIL_QUEUE.headers.length)
           .setValues(added);
         SpreadsheetApp.flush();
@@ -104,7 +109,7 @@ function ftQueueSheet_(book) {
       .setValues([FT_GMAIL_QUEUE.headers]);
     sheet.setFrozenRows(1);
     sheet.getRange(1,1,1,FT_GMAIL_QUEUE.headers.length).setFontWeight("bold");
-    sheet.getRange("G2:G10000").setDataValidation(
+    sheet.getRange(2,7,sheet.getMaxRows()-1,1).setDataValidation(
       SpreadsheetApp.newDataValidation()
         .requireValueInList(["PENDING","SCREENED","VERIFIED","UNVERIFIED",
           "DEFERRED","EXCLUDED","FAILED"],true).build());
