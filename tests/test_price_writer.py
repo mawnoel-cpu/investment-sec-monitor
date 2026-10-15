@@ -104,7 +104,7 @@ class DailyPriceTests(unittest.TestCase):
         with patch.object(p,"yahoo_history",return_value=(y,"stale")):
             *_,bars,end,err=p.fetch_ticker("BHP:LSE","LON:BHP",now)
         self.assertNotIn(end,bars)
-        self.assertIn("untrusted",err)
+        self.assertIn("not trusted",err)
 
     def test_wrong_currency_is_rejected(self):
         payload={"chart":{"error":None,"result":[{"meta":{"currency":"EUR"},
