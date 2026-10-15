@@ -52,14 +52,23 @@ def evaluate(now, intake, reviews, snapshots, required, verified):
         decision = str(value(row, 5))
         dates_ok = isinstance(stamp, (int, float)) and isinstance(asof, (int, float)) and day <= stamp <= prices.serial(now) and day <= asof <= prices.serial(now)
         complete = dates_ok and bool(decision) and not re.match(r"(?i)^(started|pending|failed|incomplete|blocked|in progress)", decision) and not missing and not invalid
-        if complete and isinstance(verified, (int, float)) and asof < verified:
-            review_state = "NEW INPUTS"
+        # A morning-only review cannot pass the afternoon decision check,
+        # even when new evidence arrived after the trading cutoff.
+        if complete and now.time() >= time(14, 45) and stamp < day + (14 * 60 + 20) / 1440:
+            review_state = "PREWINDOW REFRESH MISSING"
             complete = False
+        elif complete and isinstance(verified, (int, float)) and asof < verified:
+            cutoff = day + (15 * 60 + 15) / 1440
+            if now.time() >= time(15, 15) and verified >= cutoff:
+                # Later research must be assessed at the next eligible trade
+                # window. Preserve today's frozen review and the independent
+                # historical prewindow-delivery warning (BACKEND HEALTH!B37).
+                review_state = "NEXT-DAY INPUTS"
+            else:
+                review_state = "NEW INPUTS"
+                complete = False
         elif complete:
             review_state = "SAVED"
-            if now.time() >= time(14, 45) and stamp < day + (14 * 60 + 20) / 1440:
-                review_state = "PREWINDOW REFRESH MISSING"
-                complete = False
         else:
             review_state = "INCOMPLETE"
     elif len(matches) > 1:
