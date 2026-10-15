@@ -1,0 +1,23 @@
+name: Validate FT Gmail Queue Offline
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps-script/FT_Gmail_Queue.gs"
+      - "apps-script/README.md"
+      - "tests/test_ft_gmail_queue.cjs"
+      - ".github/workflows/ft_gmail_queue_validation.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  queue-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: Offline Apps Script mocks — no Gmail or Sheets credentials
+        run: node --test tests/test_ft_gmail_queue.cjs
