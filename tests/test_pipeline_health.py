@@ -58,6 +58,44 @@ class PersistenceTests(unittest.TestCase):
         self.assertEqual(review,"PREWINDOW REFRESH MISSING")
         self.assertTrue(faults)
 
+    def test_identical_failure_runs_write_one_record_per_checkpoint(self):
+        stamp=p.serial(datetime(2026,10,14,14,50,tzinfo=p.TORONTO))
+        original=[stamp,"FAILED","SAVED PARTIAL","INCOMPLETE",78,16,
+                  "Reviews!A16:J16: missing snapshots","https://github.com/run/1","old-sha"]
+        repeated=[stamp+.001,"FAILED","SAVED PARTIAL","INCOMPLETE",78,16,
+                  "Reviews!A16:J16: missing snapshots","https://github.com/run/2","new-sha"]
+        self.assertFalse(h.should_append_audit(original,repeated))
+        self.assertEqual(h.audit_phase(stamp),"DECISION_DUE")
+
+    def test_status_change_or_new_exact_fault_creates_audit(self):
+        stamp=p.serial(datetime(2026,10,14,14,50,tzinfo=p.TORONTO))
+        original=[stamp,"FAILED","SAVED PARTIAL","INCOMPLETE",78,16,
+                  "Reviews!A16:J16: missing snapshots","run1","sha1"]
+        for index, change in [(1,"SAVED"),(3,"SAVED"),
+                              (6,"Sources!I53: missing receipt")]:
+            changed=list(original)
+            changed[index]=change
+            self.assertTrue(h.should_append_audit(original,changed))
+        later=list(original)
+        later[0]=p.serial(datetime(2026,10,14,18,5,tzinfo=p.TORONTO))
+        self.assertTrue(h.should_append_audit(original,later))
+
+    def test_new_trading_day_or_deadline_checkpoint_records_audit(self):
+        t=p.serial(datetime(2026,10,14,13,50,tzinfo=p.TORONTO))
+        row=[t,"SAVED","SAVED PARTIAL","PENDING",78,16,"research done","run1","sha1"]
+        after=list(row)
+        after[0]=p.serial(datetime(2026,10,14,14,50,tzinfo=p.TORONTO))
+        self.assertTrue(h.should_append_audit(row,after))
+        after[0]=p.serial(datetime(2026,10,15,13,50,tzinfo=p.TORONTO))
+        self.assertTrue(h.should_append_audit(row,after))
+
+    def test_system_note_is_red_for_live_or_historical_failure(self):
+        self.assertEqual(h.system_state_text(["Reviews!A16"],"SAVED PARTIAL","SAVED","DUE"),
+                         "SYSTEM — ⚠ BACKEND: SEE CELL NOTE")
+        self.assertIn("PREWINDOW DELIVERY MISSED",
+                      h.system_state_text([],"SAVED PARTIAL","SAVED","MISSED"))
+        self.assertIn("VERIFIED",h.system_state_text([],"SAVED COMPLETE","SAVED","ON TIME"))
+
     def test_snapshot_requires_real_date_action_and_coverage(self):
         for column, bad in ((0, 1), (0, "bad"), (10, ""), (18, "")):
             f=list(self.fixture());f[3][0][column]=bad
