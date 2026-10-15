@@ -78,6 +78,52 @@ def evaluate(now, intake, reviews, snapshots, required, verified):
     return research, review_state, faults
 
 
+def audit_phase(stamp):
+    """One durable receipt for each trading-day checkpoint; no duplicate chatter.
+
+    The append-only history preserves research/decision deadlines and one EOD
+    recovery checkpoint. Any changed fault/state creates a new receipt even in
+    the same checkpoint. GitHub run IDs do not count as a state change.
+    """
+    try:
+        serial = float(stamp)
+        minute = int(round((serial - int(serial)) * 1440))
+    except (TypeError, ValueError, OverflowError):
+        return "UNKNOWN"
+    if minute < 13 * 60 + 40:
+        return "PRE_RESEARCH"
+    if minute < 14 * 60 + 45:
+        return "RESEARCH_DUE"
+    if minute < 15 * 60 + 15:
+        return "DECISION_DUE"
+    if minute < 18 * 60:
+        return "AFTER_WINDOW"
+    return "CLOSING"
+
+
+def audit_signature(record):
+    """Ignore per-run metadata; retain any exact issue/cell/coverage changes."""
+    if not record or not isinstance(value(record, 0), (int, float)):
+        return None
+    return (int(value(record, 0)), audit_phase(value(record, 0)),
+            *[str(value(record, n)) for n in range(1, 7)])
+
+
+def should_append_audit(previous, proposed):
+    return audit_signature(previous) != audit_signature(proposed)
+
+
+def system_state_text(faults, research, review, delivery):
+    """One explicit status, written only when the state/checkpoint changes."""
+    if faults:
+        return "SYSTEM — ⚠ BACKEND: SEE CELL NOTE"
+    if "MISSED" in str(delivery):
+        return "SYSTEM — ⚠ BACKEND: PREWINDOW DELIVERY MISSED"
+    if research.endswith("PARTIAL") or review == "NEXT-DAY INPUTS":
+        return "SYSTEM — CHECKED; RESEARCH PARTIAL / NEXT-DAY INPUTS"
+    return "SYSTEM — VERIFIED: REQUIRED WRITES"
+
+
 def main(now=None):
     now = now or datetime.now(prices.TORONTO)
     if now.date() > prices.date(2026, 11, 27) or now.weekday() >= 5:
@@ -116,7 +162,9 @@ def main(now=None):
         health.resize(rows=1000)
     health.update(range_name="A43:I43", values=[["CHECKED AT", "PRICE WRITE", "RESEARCH WRITE", "REVIEW WRITE", "PRICE SYMBOLS", "REQUIRED SNAPSHOTS", "EXACT FAULT / COVERAGE", "GITHUB RUN", "COMMIT"]], value_input_option="RAW")
     rows = health.get("A44:I1000", value_render_option="UNFORMATTED_VALUE")
-    dest = 44 + len(rows)
+    filled = [(44 + i, r) for i, r in enumerate(rows) if r and value(r, 0)]
+    previous_row, previous = filled[-1] if filled else (None, [])
+    dest = previous_row + 1 if previous_row is not None else 44
     link = "https://github.com/mawnoel-cpu/investment-sec-monitor/actions/runs/" + os.getenv("GITHUB_RUN_ID", "local")
     all_saved = price_state == "SAVED" and research.startswith("SAVED ") and review in {"SAVED", "NEXT-DAY INPUTS"}
     if faults:
@@ -134,13 +182,49 @@ def main(now=None):
     if "MISSED" in delivery:
         details += " | Prewindow delivery MISSED: BACKEND HEALTH!B37, Sources!I46:I1000, Reviews!A8:J1001, DAILY CLOSES!L5:P200. Current recovery does not backdate the missed window."
     record = [prices.serial(now), price_state, research, review, len(tracked), len(required), details[:48000], link, os.getenv("GITHUB_SHA", "local")]
-    health.update(range_name=f"A{dest}:I{dest}", values=[record], value_input_option="RAW")
-    if not prices.rows_match(health.get(f"A{dest}:I{dest}", value_render_option="UNFORMATTED_VALUE"), [record]):
-        raise RuntimeError(f"BACKEND HEALTH!A{dest}:I{dest}: audit readback mismatch")
-    desk = book.worksheet("TRADE DESK")
-    note = f"Persistence audit BACKEND HEALTH!A{dest}:I{dest}, {now.isoformat()}. " + details
-    book.batch_update({"requests": [{"updateCells": {"range": {"sheetId": desk.id, "startRowIndex": 12, "endRowIndex": 13, "startColumnIndex": 1, "endColumnIndex": 2}, "rows": [{"values": [{"note": note}]}], "fields": "note"}}, {"repeatCell": {"range": {"sheetId": health.id, "startRowIndex": dest-1, "endRowIndex": dest, "startColumnIndex": 0, "endColumnIndex": 1}, "cell": {"userEnteredFormat": {"numberFormat": {"type": "DATE_TIME", "pattern": "dd mmm yyyy HH:mm"}}}, "fields": "userEnteredFormat.numberFormat"}}]})
-    print(json.dumps({"status": "Failed" if faults else "Recovered late" if all_saved and "MISSED" in delivery else "Verified" if all_saved else "Waiting", "prices": price_state, "research": research, "review": review, "prewindow": delivery, "audit_row": dest, "faults": faults, "readback": "verified"}))
+    changed = should_append_audit(previous, record)
+    if changed:
+        if dest > 1000:
+            raise RuntimeError("BACKEND HEALTH!A44:I1000 full; cannot certify audit")
+        health.update(range_name=f"A{dest}:I{dest}", values=[record], value_input_option="RAW")
+        if not prices.rows_match(health.get(f"A{dest}:I{dest}", value_render_option="UNFORMATTED_VALUE"), [record]):
+            raise RuntimeError(f"BACKEND HEALTH!A{dest}:I{dest}: audit readback mismatch")
+
+        # GitHub is the sole backend-display writer. Keep A/B only, never
+        # replace holdings or orders. Colour actual faults red and recoveries
+        # neutral, while preserving a specific comment linking to exact cells.
+        desk = book.worksheet("TRADE DESK")
+        note = f"Persistence audit BACKEND HEALTH!A{dest}:I{dest}, {now.isoformat()}. " + details
+        warning = bool(faults) or "MISSED" in str(delivery)
+        background = {"red": 0.98, "green": 0.84, "blue": 0.84} if warning else {"red": 0.93, "green": 0.95, "blue": 0.97}
+        desk_text = system_state_text(faults, research, review, delivery)
+        stamp = now.strftime("%d %b %H:%M")
+        book.batch_update({"requests": [
+            {"updateCells": {"range": {"sheetId": desk.id, "startRowIndex": 12, "endRowIndex": 13, "startColumnIndex": 0, "endColumnIndex": 2},
+                "rows": [{"values": [
+                    {"userEnteredValue": {"stringValue": stamp}},
+                    {"userEnteredValue": {"stringValue": desk_text}, "note": note,
+                     "userEnteredFormat": {"backgroundColor": background}}
+                ]}],
+                "fields": "userEnteredValue,note,userEnteredFormat.backgroundColor"}},
+            {"repeatCell": {"range": {"sheetId": health.id, "startRowIndex": dest-1, "endRowIndex": dest, "startColumnIndex": 0, "endColumnIndex": 1},
+                "cell": {"userEnteredFormat": {"numberFormat": {"type": "DATE_TIME", "pattern": "dd mmm yyyy HH:mm"}}},
+                "fields": "userEnteredFormat.numberFormat"}
+        ]})
+        actual = desk.get("A13:B13", value_render_option="FORMATTED_VALUE")
+        if not actual or actual[0][:2] != [stamp, desk_text]:
+            raise RuntimeError("TRADE DESK!A13:B13: backend status readback mismatch")
+        audit_row = dest
+    else:
+        # Audit stays visible without another duplicate row/comment. A healthy
+        # Actions exit requires zero faults; a persistent fault still fails.
+        audit_row = previous_row
+    status = ("Failed" if faults else "Recovered late" if all_saved and "MISSED" in str(delivery)
+              else "Verified" if all_saved else "Waiting")
+    print(json.dumps({"status": status, "prices": price_state, "research": research,
+        "review": review, "prewindow": delivery, "audit_row": audit_row,
+        "audit_change": "saved" if changed else "unchanged; existing verified receipt",
+        "faults": faults, "readback": "verified" if changed else "previous certified receipt"}))
     if faults:
         raise RuntimeError("FT persistence audit failed; see exact workbook cells above")
 
