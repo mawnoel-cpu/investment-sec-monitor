@@ -15,6 +15,8 @@ import time
 from datetime import date, datetime, time as clock, timedelta
 from zoneinfo import ZoneInfo
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from html.parser import HTMLParser
+from ft_rotation_universe import ETF_SYMBOLS, extra_symbols
 
 import requests
 
@@ -157,6 +159,68 @@ def stooq_history(ticker,now):
         return [],"Stooq: "+str(ex)[:100]
 
 
+class HistoryTable(HTMLParser):
+    """Parse visible price-table cells only; never execute remote page code."""
+    def __init__(self):
+        super().__init__()
+        self.rows, self.row, self.cell = [], None, None
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "tr":
+            self.row = []
+        if tag in {"td", "th"}:
+            self.cell = ""
+
+    def handle_data(self, data):
+        if self.cell is not None:
+            self.cell += data
+
+    def handle_endtag(self, tag):
+        if tag in {"td", "th"} and self.cell is not None:
+            if self.row is not None:
+                self.row.append(self.cell.strip())
+            self.cell = None
+        if tag == "tr" and self.row is not None:
+            self.rows.append(self.row)
+            self.row = None
+
+
+def stockanalysis_bars(ticker, now):
+    """Independent S&P Global-supplied public history; prices are USD.
+
+    Return dated OHLC for replay and fallback, with its original source URL.
+    No guessed London ticker/currency mapping. Rows are already split-adjusted
+    by the provider; corporate-action discrepancies must be reviewed.
+    """
+    if ticker.endswith(":LSE"):
+        return [], "StockAnalysis London mapping unverified"
+    category = "etf" if ticker in ETF_SYMBOLS else "stocks"
+    url = f"https://stockanalysis.com/{category}/{ticker.lower()}/history/"
+    try:
+        response = HTTP.get(url, timeout=12)
+        response.raise_for_status()
+        table = HistoryTable()
+        table.feed(response.text)
+        rows = []
+        for r in table.rows:
+            if len(r) < 5:
+                continue
+            try:
+                day = datetime.strptime(r[0], "%b %d, %Y").date()
+                o, h, l, c = (float(x.replace(",", "")) for x in r[1:5])
+                if min(o, h, l, c) <= 0 or not all(math.isfinite(x) for x in (o, h, l, c)):
+                    continue
+                if day <= now.date() and day >= now.date() - timedelta(days=MAX_HISTORICAL_DAYS):
+                    rows.append((day, o, h, l, c, url))
+            except (ValueError, TypeError):
+                continue
+        if not rows:
+            raise ValueError("no valid dated OHLC rows")
+        return rows, ""
+    except (requests.RequestException, ValueError, TypeError) as exc:
+        return [], "StockAnalysis: " + str(exc)[:100]
+
+
 def fetch_ticker(ticker,gs,now):
     venue,unit,zone,close_time=venue_info(ticker,gs)
     end=last_completed(now,zone,close_time)
@@ -171,6 +235,12 @@ def fetch_ticker(ticker,gs,now):
             bars.extend((d,p,url) for d,p,url in alt if latest<d<=end)
         if err2:
             err=(err+" | "+err2).strip(" |")
+    latest=max((d for d,_,_ in bars if d<=end),default=date.min)
+    if latest<end:
+        alt,err3=stockanalysis_bars(ticker,now)
+        bars.extend((d,c,url) for d,o,h,l,c,url in alt if latest<d<=end)
+        if err3:
+            err=(err+" | "+err3).strip(" |")
     valid={dt:(float(p),url) for dt,p,url in bars if dt<=end and dt.weekday()<5}
     # A holiday produces no close; last known session remains valid, not a zero return.
     return ticker,gs,venue,unit,valid,end,err
@@ -216,6 +286,10 @@ def tracking(book):
     # Sector proxies used by the held refiner and upstream oil producer.
     for ticker in ("CRAK", "XOP"):
         tracked[ticker] = "NYSEARCA:" + ticker
+    # RULE-015/020 cover all 11 sectors, fixed constituent breadth samples,
+    # and relevant industries independently of Gmail or research completion.
+    for ticker, symbol in extra_symbols().items():
+        tracked.setdefault(ticker, symbol)
     # Subindustry leadership and company attribution use these proxies too.
     for r in mon.get("A136:C157"):
         if len(r) >= 3 and r[0] and r[1] and ":" in str(r[2]):

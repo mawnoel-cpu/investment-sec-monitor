@@ -203,6 +203,33 @@ def system_state_text(faults, research, review, delivery):
     return "SYSTEM — PENDING: NEXT DELIVERY CHECK"
 
 
+def rotation_health(now, receipt, proposed, portfolio, runs):
+    """A configured schedule is not delivery; inspect saved data and timestamps."""
+    fields = {value(r,0):value(r,1) for r in receipt if value(r,0)}
+    faults = []
+    stamp = fields.get("COMPLETED AT")
+    day = int(prices.serial(now))
+    if fields.get("ROTATION STATUS") != "COMPLETE":
+        faults.append("PRICE MONITOR!U195:V202: rotation " + str(fields.get("ROTATION STATUS","MISSING")) + "; " + str(fields.get("FAULTS","")))
+    if not isinstance(stamp,(int,float)) or not day <= stamp <= prices.serial(now):
+        faults.append("PRICE MONITOR!V196: missing/current-day rotation completion receipt")
+    expected = prices.last_completed(now,*prices.venue_info("SPY","")[2:])
+    if fields.get("PRICE SESSION") != prices.serial(expected):
+        faults.append("PRICE MONITOR!V197: expected completed US session " + str(expected))
+    held = {value(r,0) for r in portfolio if isinstance(value(r,2),(int,float)) and r[2]>0}
+    counts = Counter(value(r,0) for r in proposed)
+    for t in held:
+        matches = [r for r in proposed if value(r,0)==t]
+        if counts[t]!=1 or value(matches[0],3) not in {"HOLD","TRIM","ROTATE"} or value(matches[0],10)!="VERIFIED PRIOR CLOSE":
+            faults.append(f"PRICE MONITOR!A2051:Q2070: {t} missing/invalid recommendation; no silent HOLD")
+    deadline = day + (14*60+45)/1440
+    if now.time()>=time(14,45):
+        ontime = any(isinstance(value(r,0),(int,float)) and day<=r[0]<=deadline and value(r,2)=="COMPLETE" for r in runs)
+        if not ontime:
+            faults.append("PRICE MONITOR!A1451:J2000: no verified rotation/recommendation delivery by14:45 Toronto; later recovery is LATE")
+    return faults
+
+
 def main(now=None):
     now = now or datetime.now(prices.TORONTO)
     if now.date() > prices.date(2026, 11, 27) or now.weekday() >= 5:
@@ -229,6 +256,10 @@ def main(now=None):
         faults.append("DAILY CLOSES!L5:P200: fresh post12:20 pretrade receipt missing")
     price_state = "FAILED" if faults else "SAVED"
     portfolio = book.worksheet("Portfolio").get("A8:D19", value_render_option="UNFORMATTED_VALUE")
+    monitor = book.worksheet("PRICE MONITOR")
+    faults.extend(rotation_health(now, monitor.get("U195:V202", value_render_option="UNFORMATTED_VALUE"),
+        monitor.get("A2051:Q2070", value_render_option="UNFORMATTED_VALUE"), portfolio,
+        monitor.get("A1451:J2000", value_render_option="UNFORMATTED_VALUE")))
     required = {r[0] for r in portfolio if len(r) >= 3 and isinstance(r[2], (int, float)) and r[2] > 0}
     required.update(r[0] for r in book.worksheet("ROTATION BENCH").get("C5:C15") if r and r[0])
     source = book.worksheet("Sources")

@@ -50,7 +50,8 @@ class DailyPriceTests(unittest.TestCase):
         sheets["PRICE MONITOR"].get.return_value=[["BENCH","CRWV","NASDAQ:CRWV"],["SPY","","NYSEARCA:SPY"]]
         sheets["CANDIDATE POOL"].get.return_value=[["WMT","Retail","Watch","NASDAQ:WMT"]]
         sheets["Portfolio"].get.return_value=[["PSX","Phillips",.13,.13]]
-        self.assertEqual(set(p.tracking(book)),{"PSX","CRWV","SPY","WMT","CRAK","XOP"})
+        self.assertTrue({"PSX","CRWV","SPY","WMT","CRAK","XOP"}.issubset(p.tracking(book)))
+        self.assertTrue(set(p.extra_symbols()).issubset(p.tracking(book)))
 
     def test_existing_verified_archive_can_certify_same_session(self):
         d=date(2026,10,14)
@@ -137,7 +138,8 @@ class DailyPriceTests(unittest.TestCase):
         now=datetime(2026,10,14,20,tzinfo=p.TORONTO)
         y=[(date(2026,10,13),100.0,"https://query1.finance.yahoo.com/")]
         with (patch.object(p,"yahoo_history",return_value=(y,"stale")),
-              patch.object(p,"stooq_history",return_value=([],"Stooq stale"))):
+              patch.object(p,"stooq_history",return_value=([],"Stooq stale")),
+              patch.object(p,"stockanalysis_bars",return_value=([],"independent source unavailable"))):
             *_,bars,end,err=p.fetch_ticker("SPY","NYSEARCA:SPY",now)
         self.assertNotIn(end,bars)
         self.assertIn("Stooq stale",err)
