@@ -10,6 +10,10 @@ def error(code):
 
 
 class SheetsRetryTests(unittest.TestCase):
+    def setUp(self):
+        self.pacing=patch.object(FTSheetsHTTPClient,"_pace")
+        self.pacing.start();self.addCleanup(self.pacing.stop)
+
     def test_quota_retry_recovers_without_changing_request(self):
         client=object.__new__(FTSheetsHTTPClient)
         with patch.object(HTTPClient,"request",side_effect=[error(429),"saved"]) as request,patch("ft_sheets_retry.time.sleep") as sleep:

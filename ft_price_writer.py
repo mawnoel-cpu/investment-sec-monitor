@@ -256,7 +256,17 @@ def auth_book():
     info=json.loads(secret)
     scopes=["https://www.googleapis.com/auth/spreadsheets",
             "https://www.googleapis.com/auth/drive.file"]
-    return gspread.authorize(Credentials.from_service_account_info(info,scopes=scopes),http_client=FTSheetsHTTPClient).open_by_key(BOOK_ID)
+    book=gspread.authorize(Credentials.from_service_account_info(info,scopes=scopes),http_client=FTSheetsHTTPClient).open_by_key(BOOK_ID)
+    # gspread.worksheet() otherwise refetches the entire workbook metadata
+    # for every title lookup. Reuse the same native Worksheet objects.
+    cache={ws.title:ws for ws in book.worksheets()}
+    original=book.worksheet
+    def worksheet(title):
+        if title not in cache:
+            cache[title]=original(title)
+        return cache[title]
+    book.worksheet=worksheet
+    return book
 
 
 def tracking(book):
