@@ -231,6 +231,7 @@ def rotation_health(now, receipt, proposed, portfolio, runs):
 
 
 def main(now=None):
+    injected_now = now is not None
     now = now or datetime.now(prices.TORONTO)
     if now.date() > prices.date(2026, 11, 27) or now.weekday() >= 5:
         print(json.dumps({"status": "Skipped", "reason": "outside FT weekday horizon"}))
@@ -267,7 +268,13 @@ def main(now=None):
     verified = b39[0][0] if b39 and b39[0] else 0
     intake = source.get("A46:I1000", value_render_option="UNFORMATTED_VALUE")
     reviews = book.worksheet("Reviews").get("A8:J1001", value_render_option="UNFORMATTED_VALUE")
-    research, review, issues = evaluate(now, intake, reviews, book.worksheet("Decision History").get("A5:S1000", value_render_option="UNFORMATTED_VALUE"), required, verified)
+    snapshots = book.worksheet("Decision History").get("A5:S1000", value_render_option="UNFORMATTED_VALUE")
+    # Independent review writes can arrive while our paced reads are in flight.
+    # Judge their timestamps at observation time, not the earlier process start.
+    # A truly future timestamp is still rejected; injected test clocks stay fixed.
+    if not injected_now:
+        now = datetime.now(prices.TORONTO)
+    research, review, issues = evaluate(now, intake, reviews, snapshots, required, verified)
     faults.extend(issues)
     health = book.worksheet("BACKEND HEALTH")
     if health.row_count < 1000:

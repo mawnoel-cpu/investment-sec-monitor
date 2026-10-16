@@ -77,7 +77,7 @@ input is `{ "TICKER": { "bars": [["YYYY-MM-DD",open,high,low,close,source],...] 
 
 ```sh
 python tests/run_offline.py
-node --test apps-script/tests/*.test.js
+node --test tests/test_ft_gmail_queue.cjs
 python ft_rotation_replay.py --archive private-closes.json \
   --supplement private-extra-closes.json --ohlc private-ohlc.json \
   --start 2026-09-30 --end 2026-10-15 --output private-replay.json
