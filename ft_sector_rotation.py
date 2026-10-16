@@ -277,15 +277,17 @@ def proposals(hist, positions, orders, metrics, alerts, now, config=DEFAULTS):
             display = f"{t} — UNRESOLVED: DATA FAILURE; see cell note"
         else:
             display = f"{t} — {action}; target {target:.0%}" + ("; sell to CASH" if target < held else "")
+            if target < held and any(not math.isclose(p["held"], p["queued"]) for p in positions):
+                display += "; conditional on existing queued buys"
         if not healthy and guard != "CLEAR":
             display += "; DATA FAILURE — review existing order"
-        display += " | " + (f"5D {m['r5']:+.1f}%; RS {m['rs5']:+.1f}pp" if healthy else "verified closes missing")
+        display += " | " + (f"3D {m['r3']:+.1f}%; 5D {m['r5']:+.1f}%; RS {m['rs5']:+.1f}pp" if healthy else "verified closes missing")
         output.append([t, held, queued, action, target, why, prices.serial(now), prices.serial(end), order, execution,
                        "VERIFIED PRIOR CLOSE" if healthy else "FAILED", guard, industry, m["r5"], m["rs5"], cashcheck, display])
     return output
 
 
-def rank_candidates(rows, hist, end, now, config=DEFAULTS):
+def rank_candidates(rows, hist, end, now, config=DEFAULTS, positions=None):
     result = []
     for n, r in enumerate(rows, 5):
         t = str(val(r, 0))
@@ -327,11 +329,13 @@ def rank_candidates(rows, hist, end, now, config=DEFAULTS):
     result.sort(key=lambda c: (c["m"]["score"] is None, -(c["m"]["score"] or 0), c["ticker"]))
     for rank, c in enumerate(result, 1):
         c["rank"] = rank
-    held = [c for c in result if c["held"] and c["m"]["score"] is not None]
+    held = ([{"ticker":p["ticker"],"m":metric(hist,p["ticker"],end)} for p in positions if p["held"]>0]
+            if positions is not None else [c for c in result if c["held"]])
+    held = [c for c in held if c["m"]["score"] is not None]
     weakest = min(held, key=lambda c: c["m"]["score"]) if held else None
     ready = [c for c in result if c["state"] == "READY FOR HUMAN REVIEW"]
     for c in result:
-        comparison = (f"momentum score {c['m']['score']:.2f} vs weakest ranked incumbent {weakest['ticker']} {weakest['m']['score']:.2f}; not an expected return"
+        comparison = (f"momentum score {c['m']['score']:.2f} vs weakest actual incumbent {weakest['ticker']} {weakest['m']['score']:.2f}; not an expected return"
                       if weakest and c["m"]["score"] is not None else "incumbent comparison incomplete")
         if c in ready:
             c["cash_rank"] = f"Qualified purchase #{ready.index(c)+1}; cash after {len(ready)} qualified ideas; {comparison}; human sizing required"
@@ -359,7 +363,15 @@ def warning_rows(alerts, prior, end, now, positions, config, digest, mode="LIVE"
             old[i][14] = prices.serial(end)
             # First evidence and thresholds remain frozen, even after edits.
             continue
-        key = f"RULE-015:{mode}:{end}:{a['lag']}:{a['lead']}"
+        base_key = f"RULE-015:{mode}:{end}:{a['lag']}:{a['lead']}"
+        key = base_key
+        # A threshold edit can clear/reactivate a pair on the same session.
+        # Preserve both episodes without colliding with a historical key.
+        existing_keys = {r[0] for r in old}
+        episode = 2
+        while key in existing_keys:
+            key = f"{base_key}:episode-{episode}"
+            episode += 1
         old.append([key, prices.serial(now), prices.serial(end), *pair, a["d3"], a["d5"], a["lag3"], a["lead3"], a["lag5"], a["lead5"], a["breadth"], exposure,
                     "REVIEW NOW — independent of Gmail", prices.serial(end), mode, config["warning_3d_pp"], config["warning_5d_pp"], digest])
     if len(old) > 1180:
@@ -457,7 +469,7 @@ def main(now=None):
         raise RuntimeError("CANDIDATE POOL!BD4:BG4: unexpected valuation schema")
     write_verified(pool, "BD4:BG4", [VALUATION_HEADERS])
     candidates = pool.get("A5:BG104", value_render_option="UNFORMATTED_VALUE")
-    ranked = rank_candidates(candidates, hist, end, now, config)
+    ranked = rank_candidates(candidates, hist, end, now, config, positions=positions)
     existing = pool.get("AR4:BC4")
     if existing and any(existing[0]) and existing[0] != CANDIDATE_HEADERS:
         raise RuntimeError("CANDIDATE POOL!AR4:BC4: unexpected existing schema")

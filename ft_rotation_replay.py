@@ -26,7 +26,10 @@ def read_rows(path):
 
 def replay(hist,start,end,config=None):
     config=config or r.DEFAULTS
-    previous=set();episodes=[];daily=[]
+    baseline_day=r.prior_session(start)
+    baseline={t:{d:v for d,v in series.items() if d<=baseline_day} for t,series in hist.items()}
+    previous={(a["lag"],a["lead"]) for a in r.detect_warnings(r.group_metrics(baseline,baseline_day),config)}
+    episodes=[];daily=[]
     days=[d for d in sorted(hist.get("SPY",{})) if start<=d<=end]
     for day in days:
         # Physically remove all later prices before any detection calculation.

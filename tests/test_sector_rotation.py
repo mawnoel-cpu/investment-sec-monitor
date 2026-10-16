@@ -46,6 +46,16 @@ class SectorRotationTests(unittest.TestCase):
         rows=s.proposals({},[{"ticker":"MSFT","held":.15,"queued":.15}],[],{},[],now)
         self.assertEqual(rows[0][3],"UNRESOLVED");self.assertEqual(rows[0][10],"FAILED")
 
+    def test_same_session_reactivation_preserves_distinct_episode(self):
+        now=datetime(2026,10,16,10,tzinfo=prices.TORONTO)
+        a={"lag":"SOXX","lead":"XLV","d3":4.1,"d5":3,"lag3":-3,"lead3":1.1,"lag5":-2,"lead5":1,"breadth":"unavailable"}
+        first=s.warning_rows([a],[],date(2026,10,15),now,[],s.DEFAULTS,"hash")
+        cleared=s.warning_rows([],first,date(2026,10,15),now,[],s.DEFAULTS,"hash")
+        again=s.warning_rows([a],cleared,date(2026,10,15),now,[],s.DEFAULTS,"hash")
+        self.assertEqual(len(again),2)
+        self.assertEqual(again[0][13],"CLEARED")
+        self.assertNotEqual(again[0][0],again[1][0])
+
     def test_pending_buy_prevents_duplicate_and_inferred_fill(self):
         now=datetime(2026,10,16,14,tzinfo=prices.TORONTO)
         p=[{"ticker":"MSFT","held":.15,"queued":.20},{"ticker":"AMGN","held":.05,"queued":.10}]
@@ -122,6 +132,13 @@ class SectorRotationTests(unittest.TestCase):
         out=s.rank_candidates([r],fixture(),date(2026,10,15),now)
         self.assertIn("valuation review missing",out[0]["gaps"])
         self.assertIn("CASH ranks ahead",out[0]["cash_rank"])
+
+    def test_candidate_compares_with_held_names_outside_candidate_pool(self):
+        now=datetime(2026,10,16,tzinfo=prices.TORONTO);h=fixture()
+        h["BHP:LSE"]={d:200-v for d,v in h["SPY"].items()}
+        row=[""]*59;row[0]="AMGN";row[3]="NASDAQ:AMGN"
+        out=s.rank_candidates([row],h,date(2026,10,15),now,positions=[{"ticker":"BHP:LSE","held":.1}])
+        self.assertIn("BHP:LSE",out[0]["cash_rank"])
 
     def test_delayed_job_cannot_backdate_on_time_delivery(self):
         now=datetime(2026,10,16,14,55,tzinfo=prices.TORONTO)
