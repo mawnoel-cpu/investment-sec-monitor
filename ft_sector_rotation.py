@@ -1,7 +1,7 @@
 """Executable RULE-015/020: matched-session leadership, warnings and decisions.
 
 Owns only explicitly marked new blocks in PRICE MONITOR, CANDIDATE POOL AR:BC,
-and ROTATION BENCH A40:P88. Does not write holdings, orders, Evidence, research
+and ROTATION BENCH A140:P243. Does not write holdings, orders, Evidence, research
 receipts, or the human review. Trade Desk formulas consume these dated results.
 """
 from __future__ import annotations
@@ -260,6 +260,10 @@ def proposals(hist, positions, orders, metrics, alerts, now, config=DEFAULTS):
                 if cut + 1e-9 < desired:
                     cashcheck = "RULE CONSTRAINT: full risk cut needs a compliant allocation; do not silently waive cash/minimum-name limits"
                     why += "; " + cashcheck
+                if cut > 0 and any(not math.isclose(p["held"], p["queued"]) for p in positions):
+                    conditional = "cash headroom uses existing queued buys, not confirmed fills; verify their status before submitting this trim"
+                    why += "; " + conditional
+                    cashcheck += "; " + conditional
             else:
                 why += "no configured loss-control threshold crossed; retain exposure pending issuer/catalyst review"
             if alert:
@@ -466,16 +470,20 @@ def main(now=None):
         last = max(candidate_output)
         write_verified(pool, f"AR5:BC{last}", [candidate_output.get(n, [""]*12) for n in range(5,last+1)])
     bench = book.worksheet("ROTATION BENCH")
-    existing = bench.get("A40:P40")
+    # Existing A5:P104 contains an array-formula output: cells without an
+    # entered value are not necessarily blank. Keep our block beyond its bound.
+    if bench.row_count < 300:
+        bench.resize(rows=300)
+    existing = bench.get("A140:P140")
     if existing and any(existing[0]) and existing[0] != BENCH_HEADERS:
-        raise RuntimeError("ROTATION BENCH!A40:P40: unexpected existing schema")
-    write_verified(bench, "A40:P40", [BENCH_HEADERS])
+        raise RuntimeError("ROTATION BENCH!A140:P140: unexpected existing schema")
+    write_verified(bench, "A140:P140", [BENCH_HEADERS])
     benchrows = [[c["rank"], c["ticker"], c["sector"], *[c["m"][f"r{n}"] for n in (3, 5, 10, 20)], c["m"]["rs5"], c["m"]["score"], c["state"], c["eligible"], c["event"], c["reviewed"], c["gaps"], c["cash_rank"], prices.serial(now)] for c in ranked]
-    if len(benchrows) > 44:
-        raise RuntimeError("ROTATION BENCH!A41:P84: cross-sector ranking capacity")
+    if len(benchrows) > 100:
+        raise RuntimeError("ROTATION BENCH!A141:P240: cross-sector ranking capacity")
     if benchrows:
-        write_verified(bench, f"A41:P{40+len(benchrows)}", benchrows)
-    write_verified(bench, "A87:P87", [["CASH", "0% game price return", "Rank above any unqualified purchase", "", "", "", "", "", "", "READY (subject to 25% cash cap)", "N/A", "No issuer/opening-gap risk", "", "Current held and queued cash are different", "No automatic buy after sector rally", prices.serial(now)]])
+        write_verified(bench, f"A141:P{140+len(benchrows)}", benchrows)
+    write_verified(bench, "A243:P243", [["CASH", "0% game price return", "Rank above any unqualified purchase", "", "", "", "", "", "", "READY (subject to 25% cash cap)", "N/A", "No issuer/opening-gap risk", "", "Current held and queued cash are different", "No automatic buy after sector rally", prices.serial(now)]])
     # Verify order/holding invariants immediately before certification.
     if portfolio != book.worksheet("Portfolio").get("A8:D19", value_render_option="UNFORMATTED_VALUE") or orders != book.worksheet("Trade Log").get("A8:K1000", value_render_option="UNFORMATTED_VALUE"):
         raise RuntimeError("Portfolio/Trade Log changed during rotation review; refresh required before certifying")
