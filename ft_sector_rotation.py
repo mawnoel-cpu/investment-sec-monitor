@@ -247,7 +247,9 @@ def proposals(hist, positions, orders, metrics, alerts, now, config=DEFAULTS):
                 cut = min(desired, available_cash)
                 target = round(held - cut, 8)
                 if 0 < target < .05:
-                    target = 0 if available_cash >= held else held
+                    # A modest trim must not become a larger full exit merely
+                    # because the residual would breach the 5% minimum.
+                    target = 0 if severe and available_cash >= held else min(held, .05)
                 names = sum(w > 0 for w in targets.values())
                 if target == 0 and names <= int(config["min_names"]):
                     target = .05 if held > .05 else held

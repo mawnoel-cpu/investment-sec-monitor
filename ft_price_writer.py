@@ -248,6 +248,7 @@ def fetch_ticker(ticker,gs,now):
 
 def auth_book():
     import gspread
+    from ft_sheets_retry import FTSheetsHTTPClient
     from google.oauth2.service_account import Credentials
     secret=os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON","")
     if not secret:
@@ -255,7 +256,7 @@ def auth_book():
     info=json.loads(secret)
     scopes=["https://www.googleapis.com/auth/spreadsheets",
             "https://www.googleapis.com/auth/drive.file"]
-    return gspread.authorize(Credentials.from_service_account_info(info,scopes=scopes)).open_by_key(BOOK_ID)
+    return gspread.authorize(Credentials.from_service_account_info(info,scopes=scopes),http_client=FTSheetsHTTPClient).open_by_key(BOOK_ID)
 
 
 def tracking(book):

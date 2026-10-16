@@ -72,6 +72,13 @@ class SectorRotationTests(unittest.TestCase):
         self.assertAlmostEqual(out[0][4],.08);self.assertEqual(out[0][3],"TRIM")
         self.assertIn("RULE CONSTRAINT",out[0][15])
 
+    def test_small_holding_trim_respects_minimum_without_unintended_exit(self):
+        now=datetime(2026,10,16,14,tzinfo=prices.TORONTO);h=fixture()
+        h["CRWV"][date(2026,10,15)]=h["CRWV"][date(2026,10,8)]*.95
+        p=[{"ticker":"CRWV","held":.08,"queued":.08}]+[{"ticker":t,"held":.15,"queued":.15} for t in ("MSFT","AMGN","XLV","XLP","XLE")]
+        out=s.proposals(h,p,[],{},[],now)
+        self.assertEqual(out[0][3],"TRIM");self.assertEqual(out[0][4],.05)
+
     def test_missing_execution_dates_never_inferred(self):
         self.assertEqual(s.execution_window(datetime(2026,10,9,14,tzinfo=prices.TORONTO))[1],"2026-10-12T09:30:00-04:00")
         self.assertIn("2026-11-27T09:30",s.execution_window(datetime(2026,11,25,14,tzinfo=prices.TORONTO))[1])
