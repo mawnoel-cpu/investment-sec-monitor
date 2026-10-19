@@ -216,12 +216,26 @@ def rotation_health(now, receipt, proposed, portfolio, runs):
     expected = prices.last_completed(now,*prices.venue_info("SPY","")[2:])
     if fields.get("PRICE SESSION") != prices.serial(expected):
         faults.append("PRICE MONITOR!V197: expected completed US session " + str(expected))
-    held = {value(r,0) for r in portfolio if isinstance(value(r,2),(int,float)) and r[2]>0}
-    counts = Counter(value(r,0) for r in proposed)
-    for t in held:
-        matches = [r for r in proposed if value(r,0)==t]
-        if counts[t]!=1 or value(matches[0],3) not in {"HOLD","TRIM","ROTATE"} or value(matches[0],10)!="VERIFIED PRIOR CLOSE":
-            faults.append(f"PRICE MONITOR!A2051:Q2070: {t} missing/invalid recommendation; no silent HOLD")
+    held = {value(r, 0): (n, r) for n, r in enumerate(portfolio, 8)
+            if isinstance(value(r, 2), (int, float)) and r[2] > 0}
+    counts = Counter(value(r, 0) for r in proposed)
+    for ticker, (portfolio_row, holding) in held.items():
+        matches = [(n, r) for n, r in enumerate(proposed, 2051) if value(r, 0) == ticker]
+        if (counts[ticker] != 1 or value(matches[0][1], 3) not in {"HOLD", "TRIM", "ROTATE"}
+                or value(matches[0][1], 10) != "VERIFIED PRIOR CLOSE"):
+            faults.append(f"PRICE MONITOR!A2051:Q2070: {ticker} missing/invalid recommendation; no silent HOLD")
+            continue
+        proposal_row, proposal = matches[0]
+        # A verified old close remains useful, but a position/order revision
+        # makes its saved recommendation stale until this engine reruns.
+        if any(not isinstance(value(proposal, i), (int, float))
+               or not isinstance(value(holding, j), (int, float))
+               or abs(proposal[i] - holding[j]) > 1e-8
+               for i, j in ((1, 2), (2, 3))):
+            faults.append(
+                f"PRICE MONITOR!B{proposal_row}:C{proposal_row} stale {ticker} weights"
+                f" versus Portfolio!C{portfolio_row}:D{portfolio_row}; rerun rotation"
+            )
     deadline = day + (14*60+45)/1440
     if now.time()>=time(14,45):
         ontime = any(isinstance(value(r,0),(int,float)) and day<=r[0]<=deadline and value(r,2)=="COMPLETE" for r in runs)

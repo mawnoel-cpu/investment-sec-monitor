@@ -133,6 +133,25 @@ class PersistenceTests(unittest.TestCase):
                   "sources","audit","limits","Daily:2026-10-15"]]
         self.assertTrue(h.delivery_status(now,prices,intake,reviews).startswith("ON TIME"))
 
+    def test_rotation_rejects_stale_post_execution_weights(self):
+        # META user-confirmed sale 12% -> 10%, but engine saved 12% held.
+        now = datetime(2026, 10, 19, 14, 30, tzinfo=p.TORONTO)
+        day = p.serial(now)
+        receipt = [["ROTATION STATUS", "COMPLETE"],
+                   ["COMPLETED AT", day],
+                   ["PRICE SESSION", p.serial(datetime(2026, 10, 16))]]
+        old_proposal = ["META", .12, .10, "HOLD", .10, "old pending",
+                        day, p.serial(datetime(2026, 10, 16)), "", "",
+                        "VERIFIED PRIOR CLOSE", "PENDING", "XLC"]
+        live = [["META", "Meta Platforms", .10, .10]]
+        faults = h.rotation_health(now, receipt, [old_proposal], live, [])
+        self.assertTrue(any("PRICE MONITOR!B2051:C2051 stale META weights"
+                            in issue and "Portfolio!C8:D8" in issue for issue in faults))
+        refreshed = list(old_proposal)
+        refreshed[1] = .10
+        refreshed[11] = "CLEAR"
+        self.assertFalse(h.rotation_health(now, receipt, [refreshed], live, []))
+
     def test_snapshot_requires_real_date_action_and_coverage(self):
         for column, bad in ((0, 1), (0, "bad"), (10, ""), (18, "")):
             f=list(self.fixture());f[3][0][column]=bad
