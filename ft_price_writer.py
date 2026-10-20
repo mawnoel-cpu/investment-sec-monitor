@@ -10,6 +10,7 @@ import io
 import json
 import math
 import os
+import re
 import sys
 import time
 from datetime import date, datetime, time as clock, timedelta
@@ -35,6 +36,22 @@ DATA_LAST_ROW = 12000
 # a missing close, or a pre-close daily candle as a completed session.
 US_HOLIDAYS = {date(2026, 9, 7), date(2026, 11, 26)}
 LSE_HOLIDAYS = {date(2026, 8, 31)}
+
+
+def portfolio_rows(ws):
+    """Read the live holdings block up to TOTAL; never a fixed former row count."""
+    rows = ws.get("A8:D100", value_render_option="UNFORMATTED_VALUE")
+    end = next((i for i,r in enumerate(rows) if r and r[0] == "TOTAL"), None)
+    if end is None:
+        raise ValueError("Portfolio!A8:D100: TOTAL boundary missing; outside supported holdings layout")
+    result = rows[:end]
+    names = [r[0] for r in result if r and r[0]]
+    if len(names) != len(set(names)) or any(not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.^/:-]*",str(t)) for t in names):
+        raise ValueError("Portfolio!A8:D100: duplicate or invalid ticker")
+    for n,r in enumerate(rows[end+1:],9+end):
+        if r and r[0] not in {"Weight check","Holdings","Position cap"} and (any(isinstance(x,(int,float)) and not isinstance(x,bool) for x in r[2:4]) or (re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.^/:-]*", str(r[0])) and not any(x not in ("",None) for x in r[2:4]))):
+            raise ValueError(f"Portfolio!A{n}:D{n}: holding outside supported TOTAL boundary")
+    return result
 
 
 def serial(value):
@@ -305,11 +322,11 @@ def tracking(book):
     for r in mon.get("A136:C157"):
         if len(r) >= 3 and r[0] and r[1] and ":" in str(r[2]):
             tracked[str(r[1])] = str(r[2])
-    for r in book.worksheet("Portfolio").get("A8:D19", value_render_option="UNFORMATTED_VALUE"):
+    for r in portfolio_rows(book.worksheet("Portfolio")):
         if len(r) >= 4 and any(isinstance(v, (float, int)) and v > 0 for v in r[2:4]):
             ticker = str(r[0]).strip()
             if ticker not in tracked:
-                raise RuntimeError(f"Portfolio!A8:D19: held/queued {ticker} has no verified symbol mapping")
+                raise RuntimeError(f"Portfolio!A8:D100: held/queued {ticker} has no verified symbol mapping")
     if not tracked:
         raise RuntimeError("PRICE GATES/CANDIDATE POOL/PRICE MONITOR: empty universe")
     return tracked

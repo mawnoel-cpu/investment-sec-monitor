@@ -15,6 +15,7 @@ import os
 import re
 
 import ft_price_writer as prices
+import ft_financial_stress as finance
 from ft_rotation_universe import SECTORS, INDUSTRIES, COMPANY_SECTOR, COMPANY_INDUSTRY
 
 END = date(2026, 11, 27)
@@ -187,7 +188,7 @@ def parse_positions(rows):
         if val(r, 0) and isnum(val(r, 2)) and isnum(val(r, 3)) and (r[2] > 0 or r[3] > 0):
             result.append({"ticker": r[0], "held": float(r[2]), "queued": float(r[3])})
     if not result:
-        raise ValueError("Portfolio!A8:D19: no validated holdings")
+        raise ValueError("Portfolio!A8:D100: no validated holdings")
     return result
 
 
@@ -320,7 +321,8 @@ def rank_candidates(rows, hist, end, now, config=DEFAULTS, positions=None):
             gaps.append("extended: wait for orderly entry; do not chase")
         if m["rs5"] is not None and (m["rs5"] <= 0 or m["r5"] <= 0):
             gaps.append("momentum has not qualified")
-        held = isnum(val(r, 34)) and r[34] > 0
+        held = (any(p["ticker"] == t and (p["held"] > 0 or p["queued"] > 0) for p in positions)
+                if positions is not None else isnum(val(r, 34)) and r[34] > 0)
         state = "HELD — no duplicate purchase" if held else "READY FOR HUMAN REVIEW" if not gaps else "RESERVE — " + "; ".join(gaps)
         # Price score ranks the entire universe independently of topic or email.
         result.append({"row": n, "ticker": t, "sector": sector, "m": m, "state": state,
@@ -383,6 +385,77 @@ def clean_rows(rows):
     return [["" if x is None else x for x in r] for r in rows]
 
 
+def financial_review(proposed, assessments, ranked, positions, orders, now, config=DEFAULTS):
+    """Extend these proposals, using the existing candidate gates and game rules.
+
+    No order is placed. A paired purchase is one indivisible recommendation;
+    unresolved orders or different execution venues block a new pairing.
+    """
+    output = [list(p) for p in proposed]
+    targets = {p["ticker"]:p["queued"] for p in positions}
+    targets.update({p[0]:p[4] for p in output})
+    pending = pending_orders(orders)
+    unsettled = bool(pending) or any(abs(p["held"]-p["queued"])>1e-8 for p in positions)
+    buys = []
+    used = set(targets)
+    for p in output:
+        a = assessments[p[0]]
+        a["scope"] = "Company-specific financing/cash evidence" if a["material"] else "Existing market/sector evidence; no confirmed issuer credit event"
+        desired = max(0.,p[1]-p[4])
+        match = re.search(r"desired cut ([0-9.]+)%",p[5])
+        if match:
+            desired = max(desired,float(match[1])/100)
+        if a["material"]:
+            desired = max(desired,min(p[1],config["trim_step_pp"]/100))
+        eligible = p[11]=="CLEAR" and p[10]=="VERIFIED PRIOR CLOSE" and not unsettled and not p[9].startswith("NONE")
+        why = "Retain allocation: available issuer facts and existing price rules do not jointly justify a new cut."
+        if eligible and desired>1e-8:
+            already = p[1]-p[4]
+            room = max(0.,config["max_cash_pct"]/100-(1-sum(targets.values())))
+            extra = min(max(0.,desired-already),room)
+            cash_target = round(p[4]-extra,8)
+            names = sum(w>0 for w in targets.values())
+            if (cash_target==0 and names<int(config["min_names"])+1) or 0<cash_target<.05:
+                extra=0.
+            if extra>1e-8:
+                p[4]=cash_target; targets[p[0]]=cash_target
+            cut = p[1]-p[4]
+            if cut>1e-8:
+                p[3]="EXIT" if p[4]==0 else "TRIM"
+                p[15]="CASH; within 25% ceiling; no purchase required"
+                why=f"Reduce independently evidenced downside by selling {cut*100:g}pp to cash; cash preserves flexibility before a qualified entry."
+            remaining=max(0.,desired-cut)
+            choices=[c for c in ranked if c["state"]=="READY FOR HUMAN REVIEW" and c["ticker"] not in used and c["ticker"] not in pending]
+            candidate=next((c for c in choices if prices.venue_info(c["ticker"],"")[0]==prices.venue_info(p[0],"")[0]),None)
+            # New positions must be at least 5%, no more than 25%; conserve cash
+            # across the same eligible game session. Never rank missing data.
+            pair = min(remaining,.25)
+            newtarget=round(p[4]-pair,8)
+            if candidate and pair>=.05-1e-8 and (newtarget==0 or newtarget>=.05) and sum(w>0 for w in targets.values())+(1 if newtarget else 0)>=int(config["min_names"]):
+                t=candidate["ticker"]; used.add(t); p[4]=newtarget; targets[p[0]]=newtarget; targets[t]=pair
+                p[3]="ROTATE"; p[15]=f"REQUIRED SIMULTANEOUS BUY {t} {pair*100:g}pp; neither leg independently executable if cash cap breached"
+                why=f"Sell {p[1]-newtarget:.0%} ({(p[1]-newtarget)*100:g}pp); buy {t} {pair*100:g}pp in the same session. {candidate['cash']}. Existing valuation, catalyst, entry and eligibility gates passed."
+                m=candidate["m"]
+                buys.append([t,0.,0.,"BUY",pair,why,prices.serial(now),p[7],p[8],p[9],"VERIFIED PRIOR CLOSE","CLEAR",candidate["sector"],m["r5"],m["rs5"],f"PAIRED ONLY with {p[0]} sale",f"{t} — BUY {pair*100:g}pp ONLY paired with {p[0]}; target {pair:.0%}"])
+            elif remaining>1e-8:
+                p[15]="BLOCKED: cash/name/size constraint; needs simultaneous qualified purchase in same execution venue"
+                why=f"Desired sell {desired*100:g}pp; {remaining*100:g}pp blocked. Cash is at/near its ceiling; no compliant qualified purchase is available. Retain the blocked portion."
+        elif desired>1e-8 and not eligible:
+            why="No new financial trade: resolve existing orders/data/execution deadline first; never resubmit an existing instruction."
+        a["options"] = why
+        p[5] += " | "+finance.summary(a)+" | "+a["scope"]+" | "+why+" Reversal: "+a["reversal"]
+        if p[11]=="CLEAR" and p[10]=="VERIFIED PRIOR CLOSE":
+            label="NO TRADE (blocked cut)" if p[4]==p[1] and "BLOCKED" in p[15] else p[3]
+            p[16]=f"{p[0]} — {label}; {p[1]:.0%} → {p[4]:.0%}; sell {(p[1]-p[4])*100:g}pp | {finance.summary(a)} | {p[15]}"
+        else:
+            p[16]+=" | "+finance.summary(a)
+    if len(output)+len(buys)>20:
+        raise RuntimeError("PRICE MONITOR proposal capacity exceeded")
+    if any(w>.25+1e-8 or w<0 for w in targets.values()) or 1-sum(targets.values())>.25+1e-8 or sum(w>0 for w in targets.values())<5:
+        raise RuntimeError("Financial proposal fails final portfolio constraints")
+    return output+buys
+
+
 def write_verified(ws, address, rows):
     rows = clean_rows(rows)
     ws.update(range_name=address, values=rows, value_input_option="RAW")
@@ -422,7 +495,7 @@ def main(now=None):
     if config["warning_3d_pp"] <= 0 or config["warning_5d_pp"] <= 0 or config["max_cash_pct"] != 25 or config["min_names"] != 5:
         raise RuntimeError("PRICE MONITOR!U175:V187: unsafe thresholds or game limits")
     write_verified(monitor, "U195:V196", [["ROTATION STATUS", "STARTED"], ["LAST START", prices.serial(now)]])
-    portfolio = book.worksheet("Portfolio").get("A8:D19", value_render_option="UNFORMATTED_VALUE")
+    portfolio = prices.portfolio_rows(book.worksheet("Portfolio"))
     orders = book.worksheet("Trade Log").get("A8:K1000", value_render_option="UNFORMATTED_VALUE")
     positions = parse_positions(portfolio)
     raw = book.worksheet("DAILY CLOSES").get(f"A5:J{prices.DATA_LAST_ROW}", value_render_option="UNFORMATTED_VALUE")
@@ -446,21 +519,6 @@ def main(now=None):
     write_verified(monitor, f"A175:S{174 + len(rows)}", rows)
     proposed = proposals(hist, positions, orders, groups, alerts, now, config)
     faults.extend(r[5] for r in proposed if r[10] == "FAILED")
-    write_verified(monitor, f"A2051:Q{2050 + len(proposed)}", proposed)
-    # Clear only prior own proposals below the current count, avoiding stale names.
-    monitor.batch_clear([f"A{2051 + len(proposed)}:Q2070"])
-    # Attach a full reason and exact data location to the two-column display.
-    # The price writer precedes this step; SYSTEM/B13 remains health-owned.
-    desk = book.worksheet("TRADE DESK")
-    requests = []
-    for i, row in enumerate(proposed, 1):
-        bad = row[10] == "FAILED" or row[3] == "UNRESOLVED"
-        color = {"red":.98,"green":.84,"blue":.84} if bad else {"red":.96,"green":.97,"blue":.98}
-        requests.append({"updateCells":{"range":{"sheetId":desk.id,"startRowIndex":i,"endRowIndex":i+1,"startColumnIndex":1,"endColumnIndex":2},
-            "rows":[{"values":[{"note":f"PRICE MONITOR!A{2050+i}:Q{2050+i}. {row[5]}\nNext order window {row[8]}; next executable open {row[9]}. Price-risk proposal only; consult current issuer review. No order placed.","userEnteredFormat":{"backgroundColor":color}}]}],
-            "fields":"note,userEnteredFormat.backgroundColor"}})
-    if requests:
-        book.batch_update({"requests":requests})
     pool = book.worksheet("CANDIDATE POOL")
     if pool.col_count < 59:
         pool.resize(cols=59)
@@ -498,14 +556,70 @@ def main(now=None):
     if benchrows:
         write_verified(bench, f"A141:P{140+len(benchrows)}", benchrows)
     write_verified(bench, "A243:P243", [["CASH", "0% game price return", "Rank above any unqualified purchase", "", "", "", "", "", "", "READY (subject to 25% cash cap)", "N/A", "No issuer/opening-gap risk", "", "Current held and queued cash are different", "No automatic buy after sector rally", prices.serial(now)]])
+    # Optional financial evidence extends the existing decision run. A failed
+    # addon cannot disable verified RULE-015/020 proposals.
+    financial_state, financial_faults, assessments = "FAILED", [], {}
+    base_proposed = [list(row) for row in proposed]
+    try:
+        write_verified(monitor, "U210:V211", [["FINANCING CALCULATION", "STARTED"], ["FINANCING AS OF", prices.serial(now)]])
+        cards = book.worksheet("Decision Cards")
+        existing = cards.get("A40:AF40")
+        if existing and any(existing[0]) and existing[0] != finance.HEADERS:
+            raise RuntimeError("Decision Cards!A40:AF40: unexpected financial schema")
+        evidence = book.worksheet("Evidence").get("A8:Z1200", value_render_option="UNFORMATTED_VALUE")
+        signals = book.worksheet("Signals").get("A4:O19", value_render_option="UNFORMATTED_VALUE")
+        previous = cards.get("A41:AF60", value_render_option="UNFORMATTED_VALUE")
+        filings=book.worksheet("SEC Feed").get("A8:M1000", value_render_option="UNFORMATTED_VALUE")
+        assessments, financial_faults = finance.assess_all(evidence,base_proposed,signals,now,previous,filings)
+        proposed = financial_review(base_proposed,assessments,ranked,positions,orders,now,config)
+        write_verified(cards,"A40:AF40",[finance.HEADERS])
+        financial_rows=finance.output_rows(assessments,proposed)
+        write_verified(cards,f"A41:AF{40+len(financial_rows)}",financial_rows)
+        if len(financial_rows)<20:
+            cards.batch_clear([f"A{41+len(financial_rows)}:AF60"])
+        # Only an explicitly labelled suffix is calculation-owned. Keep human
+        # recommendation prose and all target/formula columns intact.
+        analysis=book.worksheet("TRADE ANALYSIS")
+        for n,row in enumerate(analysis.get("A4:F20", value_render_option="UNFORMATTED_VALUE"),4):
+            t=val(row,0)
+            if t in assessments:
+                old=str(val(row,5)).split("\nFINANCIAL STRESS [")[0]
+                a=assessments[t]
+                text=old+f"\nFINANCIAL STRESS [{now.date()}]: "+finance.summary(a)+" | "+a["options"]+" | "+a["scope"]+" | Reversal: "+a["reversal"]
+                write_verified(analysis,f"F{n}:F{n}",[[text]])
+        financial_state="VERIFIED"
+    except Exception as exc:
+        proposed=base_proposed
+        financial_faults.append(f"Financial addon failed: {type(exc).__name__}: {str(exc)[:300]}; verified price rules retained")
+        for row in proposed:
+            row[16]+=" | FIN: unavailable; see financial receipt"
+    write_verified(monitor, f"A2051:Q{2050 + len(proposed)}", proposed)
+    # Clear only prior own proposals below the current count, avoiding stale names.
+    monitor.batch_clear([f"A{2051 + len(proposed)}:Q2070"])
+    # Attach a full reason and exact data location to the two-column display.
+    # The price writer precedes this step; SYSTEM/B13 remains health-owned.
+    desk = book.worksheet("TRADE DESK")
+    requests = []
+    for i, row in enumerate(proposed, 1):
+        bad = row[10] == "FAILED" or row[3] == "UNRESOLVED"
+        color = {"red":.98,"green":.84,"blue":.84} if bad else {"red":.96,"green":.97,"blue":.98}
+        requests.append({"updateCells":{"range":{"sheetId":desk.id,"startRowIndex":i,"endRowIndex":i+1,"startColumnIndex":1,"endColumnIndex":2},
+            "rows":[{"values":[{"note":f"PRICE MONITOR!A{2050+i}:Q{2050+i}. {row[5]}\nNext order window {row[8]}; next executable open {row[9]}. Existing price/rotation plus available financial evidence; provisional model. No order placed.","userEnteredFormat":{"backgroundColor":color}}]}],
+            "fields":"note,userEnteredFormat.backgroundColor"}})
+    if requests:
+        book.batch_update({"requests":requests})
+    write_verified(monitor,"U210:V215",[["FINANCING CALCULATION",financial_state],
+        ["FINANCING AS OF",prices.serial(now)],["FINANCING HOLDINGS",len(assessments)],
+        ["FINANCING INPUT GAPS"," | ".join(financial_faults)[:45000]],
+        ["FINANCING MODEL",finance.MODEL],["FINANCING READBACK","Decision Cards A40:AF60; proposal Q; TRADE ANALYSIS F; no orders"]])
     # Verify order/holding invariants immediately before certification.
-    if portfolio != book.worksheet("Portfolio").get("A8:D19", value_render_option="UNFORMATTED_VALUE") or orders != book.worksheet("Trade Log").get("A8:K1000", value_render_option="UNFORMATTED_VALUE"):
+    if portfolio != prices.portfolio_rows(book.worksheet("Portfolio")) or orders != book.worksheet("Trade Log").get("A8:K1000", value_render_option="UNFORMATTED_VALUE"):
         raise RuntimeError("Portfolio/Trade Log changed during rotation review; refresh required before certifying")
     complete = now if injected_now else datetime.now(prices.TORONTO)
     state = "PARTIAL" if faults else "COMPLETE"
     receipt = [["ROTATION STATUS", state], ["COMPLETED AT", prices.serial(complete)], ["PRICE SESSION", prices.serial(end)],
                ["WARNINGS", len(alerts)], ["FAULTS", " | ".join(faults)[:45000]], ["DEADLINE", "14:45 America/Toronto"],
-               ["DECISION MODE", "Price risk proposals; issuer review is separate; no orders"], ["COVERAGE", f"{11-sum(t in SECTORS for t in missing)}/11 sectors; {len(INDUSTRIES)-sum(t in INDUSTRIES for t in missing)}/{len(INDUSTRIES)} industries"]]
+               ["DECISION MODE", "Price/rotation + financial evidence; independent issuer review; no orders"], ["COVERAGE", f"{11-sum(t in SECTORS for t in missing)}/11 sectors; {len(INDUSTRIES)-sum(t in INDUSTRIES for t in missing)}/{len(INDUSTRIES)} industries"]]
     write_verified(monitor, "U195:V202", receipt)
     runs = monitor.get("A1451:J2000", value_render_option="UNFORMATTED_VALUE")
     dest = 1451 + len(runs)

@@ -49,7 +49,7 @@ class DailyPriceTests(unittest.TestCase):
         sheets["PRICE GATES"].get.return_value=[["PSX"]]
         sheets["PRICE MONITOR"].get.return_value=[["BENCH","CRWV","NASDAQ:CRWV"],["SPY","","NYSEARCA:SPY"]]
         sheets["CANDIDATE POOL"].get.return_value=[["WMT","Retail","Watch","NASDAQ:WMT"]]
-        sheets["Portfolio"].get.return_value=[["PSX","Phillips",.13,.13]]
+        sheets["Portfolio"].get.return_value=[["PSX","Phillips",.13,.13],["TOTAL","",.13,.13]]
         self.assertTrue({"PSX","CRWV","SPY","WMT","CRAK","XOP"}.issubset(p.tracking(book)))
         self.assertTrue(set(p.extra_symbols()).issubset(p.tracking(book)))
 

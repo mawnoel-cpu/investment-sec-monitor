@@ -10,6 +10,7 @@ import os
 import re
 
 import ft_price_writer as prices
+import ft_financial_stress as finance
 
 
 def value(row, i, default=""):
@@ -221,7 +222,7 @@ def rotation_health(now, receipt, proposed, portfolio, runs):
     counts = Counter(value(r, 0) for r in proposed)
     for ticker, (portfolio_row, holding) in held.items():
         matches = [(n, r) for n, r in enumerate(proposed, 2051) if value(r, 0) == ticker]
-        if (counts[ticker] != 1 or value(matches[0][1], 3) not in {"HOLD", "TRIM", "ROTATE"}
+        if (counts[ticker] != 1 or value(matches[0][1], 3) not in {"HOLD", "TRIM", "ROTATE", "EXIT"}
                 or value(matches[0][1], 10) != "VERIFIED PRIOR CLOSE"):
             faults.append(f"PRICE MONITOR!A2051:Q2070: {ticker} missing/invalid recommendation; no silent HOLD")
             continue
@@ -270,11 +271,14 @@ def main(now=None):
     if now.time() >= time(14, 15) and value(latest, 0, 0) < int(prices.serial(now)) + (12*60+20)/1440:
         faults.append("DAILY CLOSES!L5:P200: fresh post12:20 pretrade receipt missing")
     price_state = "FAILED" if faults else "SAVED"
-    portfolio = book.worksheet("Portfolio").get("A8:D19", value_render_option="UNFORMATTED_VALUE")
+    portfolio = prices.portfolio_rows(book.worksheet("Portfolio"))
     monitor = book.worksheet("PRICE MONITOR")
     faults.extend(rotation_health(now, monitor.get("U195:V202", value_render_option="UNFORMATTED_VALUE"),
         monitor.get("A2051:Q2070", value_render_option="UNFORMATTED_VALUE"), portfolio,
         monitor.get("A1451:J2000", value_render_option="UNFORMATTED_VALUE")))
+    faults.extend(finance.health(now, monitor.get("U210:V215", value_render_option="UNFORMATTED_VALUE"),
+        book.worksheet("Decision Cards").get("A41:AF60", value_render_option="UNFORMATTED_VALUE"),
+        [(r[0],r[2],r[3]) for r in portfolio if len(r)>3 and isinstance(r[2],(int,float)) and r[2]>0]))
     required = {r[0] for r in portfolio if len(r) >= 3 and isinstance(r[2], (int, float)) and r[2] > 0}
     required.update(r[0] for r in book.worksheet("ROTATION BENCH").get("C5:C15") if r and r[0])
     source = book.worksheet("Sources")

@@ -110,20 +110,8 @@ def portfolio_universe(ws: Any) -> list[str]:
     ]
     if headers not in [[row] for row in allowed]:
         raise ValueError("Portfolio headers mismatch at A7:D7")
-    # Summary/rules below the supported holdings block must not hide new holdings.
-    summaries = {20: "TOTAL", 21: "Weight check", 22: "Holdings", 23: "Position cap"}
-    outside = ws.get(f"A20:D{ws.row_count}", value_render_option="UNFORMATTED_VALUE")
-    for number, row in enumerate(outside, 20):
-        ticker = str(row[0]).strip() if row and row[0] is not None else ""
-        if not ticker or summaries.get(number) == ticker:
-            continue
-        weights = row[2:4]
-        weighted = any(isinstance(v, (int, float)) and not isinstance(v, bool) for v in weights)
-        ticker_only = (re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.^/:-]*", ticker)
-                       and not any(v not in ("", None) for v in weights))
-        if weighted or ticker_only:
-            raise ValueError(f"Portfolio holding outside supported A8:A19 range at row {number}")
-    values = ws.get("A8:A19")
+    from ft_price_writer import portfolio_rows
+    values = portfolio_rows(ws)
     tickers: list[str] = []
     for row in values:
         if not row or not row[0]:
@@ -351,7 +339,10 @@ def collect(spreadsheet: Any, feed_ws: Any, now: datetime) -> dict[str, Any]:
                     url,
                     "Discovery",
                     duplicate_key,
-                    "Official SEC filing; review original document before promoting to Evidence.",
+                    ("FINANCE REVIEW: refresh Evidence U:Z only for new issuer information or expiry; "
+                     "verify cash flow/capex, debt/interest, obligations, refinancing and guidance; "
+                     "8-K is discovery, not a distress classification. " if form in {"10-K","10-K/A","10-Q","10-Q/A","20-F","20-F/A","8-K","8-K/A","6-K","6-K/A"} else "")
+                    + "Official SEC filing; review original document before promoting to Evidence.",
                 ])
                 keys.add(duplicate_key)
         except Exception as exc:  # noqa: BLE001

@@ -10,13 +10,14 @@ prices retrieved later reproduce what was observable, not proof a live feed
 or FT eligibility check existed then. Output is diagnostic, not actual P&L.
 """
 import argparse
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 import hashlib
 import json
 from pathlib import Path
 
 import ft_sector_rotation as r
 import ft_price_writer as p
+import ft_financial_stress as f
 
 
 def read_rows(path):
@@ -56,7 +57,7 @@ def replay(hist,start,end,config=None):
     # into thresholds, rankings, timing, eligibility or simulated decisions.
     for episode in episodes:
         day=date.fromisoformat(episode["signal_session"])
-        for n in (1,5):
+        for n in (1,5,10):
             outcome_day=day
             for _ in range(n):outcome_day=r.next_session(outcome_day)
             outcome=None
@@ -67,13 +68,73 @@ def replay(hist,start,end,config=None):
             episode[f"forward_{n}d_relative_pp"]=outcome
             episode[f"false_alarm_{n}d"]=outcome<=0 if outcome is not None else None
     scores={}
-    for n in (1,5):
+    for n in (1,5,10):
         matured=[e for e in episodes if e[f"false_alarm_{n}d"] is not None]
         scores[str(n)]={"matured":len(matured),"false":sum(e[f"false_alarm_{n}d"] for e in matured),
                         "censored":len(episodes)-len(matured)}
     return {"method":"Prices truncated at each close; initial 4pp/6pp thresholds, no optimization; fixed breadth samples constructed16Oct and not used as alert gate.",
-            "outcome_definition":"False alarm = leading sector fails to outperform lagging group over next1/5 closes. Correlated pair episodes, not independent trades; incomplete horizons censored.",
+            "outcome_definition":"False alarm = leading sector fails to outperform lagging group over next1/5/10 closes. Correlated pair episodes, not independent trades; incomplete horizons censored.",
             "daily":daily,"episodes":episodes,"false_alarm_counts":scores}
+
+
+def financial_replay(hist,evidence,history,start,end):
+    """Replay only frozen holding snapshots and contemporaneously verified facts.
+
+    Current holdings, today's Signals and today's replacement ranking are never
+    substituted for historical inputs. Outcomes are public-close diagnostics,
+    not FT executions, portfolio P&L or a tradable counterfactual.
+    """
+    cases=[]
+    for row in history:
+        if not row or not f.number(row[0]) or not start<=p.day_of(row[0])<=end or not f.number(f.value(row,3)) or row[3]<=0:
+            continue
+        when=(p.EPOCH+timedelta(days=row[0])).replace(tzinfo=p.TORONTO)
+        day=p.last_completed(when,*p.venue_info("SPY","")[2:])
+        known={t:{d:v for d,v in series.items() if d<=day} for t,series in hist.items()}
+        obs,faults=f.financial_inputs(evidence,when)
+        t=row[2];data=obs.get((t,"fundamentals"));credit=obs.get((t,"credit"))
+        fs,_,confirmed,_=f.financing(data,credit);ss,_,deteriorating=f.sustainability(data)
+        metrics=r.group_metrics(known,day);alerts=r.detect_warnings(metrics)
+        position={"ticker":t,"held":row[3],"queued":f.value(row,4,row[3])}
+        prop=r.proposals(known,[position],[],metrics,alerts,when)[0]
+        ps=f.price_severity(prop)
+        material=confirmed or (deteriorating and ps is not None and ps>=45)
+        # Future daily receipts can freeze a qualified destination in their
+        # FIN_JSON suffix. Absent that evidence, no retrospective replacement.
+        destination=None
+        marker="FIN_JSON="
+        if marker in str(f.value(row,18)):
+            try:
+                snapshot=json.loads(str(row[18]).split(marker,1)[1])
+                candidate=snapshot.get("qualified_replacement")
+                if candidate and candidate.get("all_gates_passed") and candidate.get("verified_at",float('inf'))<=row[0]:
+                    destination=candidate["ticker"]
+            except (ValueError,KeyError,TypeError):pass
+        case={"ticker":t,"decision_captured":when.isoformat(),"price_session":str(day),
+              "financing":fs,"sustainability":ss,"price":ps,"financial_material":material,
+              "added_to_price_warning":bool(material and (ps is None or ps<70)),
+              "qualified_replacement":destination,"historical_coverage":"verified issuer facts" if data or credit else "UNAVAILABLE; do not backdate today's extraction"}
+        for n in (5,10):
+            future=day
+            for _ in range(n):future=r.next_session(future,prices_venue(t))
+            series=hist.get(t,{})
+            ret=100*(series[future]/series[day]-1) if future<=end and day in series and future in series else None
+            replacement=hist.get(destination,{}) if destination else {}
+            rot=100*(replacement[future]/replacement[day]-1)-ret if ret is not None and day in replacement and future in replacement else None
+            case[f"hold_{n}_close_return_pct"]=ret
+            case[f"cash_minus_hold_{n}_pp"]=-ret if material and ret is not None else None
+            case[f"replacement_minus_hold_{n}_pp"]=rot if material else None
+            case[f"false_alarm_{n}"]=ret>=0 if material and ret is not None else None
+            case[f"missed_warning_{n}"]=ret<=r.DEFAULTS["trim_5d_pct"] if data and not material and ret is not None else None
+        cases.append(case)
+    return {"status":"UNVALIDATED", "method":"Captured/verified/publication/expiry gates; frozen holdings only; unchanged thresholds; 5/10 public-close diagnostics, never FT execution prices.",
+            "limitations":"No historical CDS or typed financing records means no test of incremental predictive value. Missing point-in-time replacement qualification prohibits hindsight selection. Cash advantage is unscaled and is not an executable trim or portfolio return.",
+            "cases":cases,"cases_with_issuer_facts":sum(c["financing"] is not None or c["sustainability"] is not None for c in cases),
+            "incremental_financial_warnings":sum(c["added_to_price_warning"] for c in cases)}
+
+
+def prices_venue(ticker):
+    return p.venue_info(ticker,"")[0]
 
 
 def illustrative_returns(ohlc,entry,end):
@@ -93,6 +154,7 @@ def main():
     ap.add_argument("--archive",required=True);ap.add_argument("--supplement")
     ap.add_argument("--ohlc");ap.add_argument("--start",default="2026-09-30")
     ap.add_argument("--end",default="2026-10-15");ap.add_argument("--output",required=True)
+    ap.add_argument("--financial-evidence");ap.add_argument("--decision-history")
     args=ap.parse_args();rows=read_rows(args.archive)
     if args.supplement:rows+=read_rows(args.supplement)
     hist,_,errors=r.load_archive(rows)
@@ -101,6 +163,9 @@ def main():
     result=replay(hist,date.fromisoformat(args.start),end)
     result["input_sha256"]=hashlib.sha256(json.dumps(rows,separators=(",",":")).encode()).hexdigest()
     result["archive_errors"]=errors
+    if args.financial_evidence:
+        if not args.decision_history:raise ValueError("Financial replay requires frozen Decision History; never use today's holdings")
+        result["financial_stress"]=financial_replay(hist,read_rows(args.financial_evidence),read_rows(args.decision_history),date.fromisoformat(args.start),end)
     if args.ohlc:
         result["illustrative_oct12_open_to_end"]=illustrative_returns(json.loads(Path(args.ohlc).read_text()),date(2026,10,12),end)
     Path(args.output).write_text(json.dumps(result,indent=2))

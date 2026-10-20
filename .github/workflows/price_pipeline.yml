@@ -11,6 +11,8 @@ on:
       - "tests/test_pipeline_health.py"
       - "ft_rotation_universe.py"
       - "ft_sector_rotation.py"
+      - "ft_financial_stress.py"
+      - "tests/test_financial_stress.py"
       - "ft_sheets_retry.py"
       - "tests/test_sector_rotation.py"
       - ".github/workflows/price_pipeline.yml"
