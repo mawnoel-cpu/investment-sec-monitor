@@ -220,7 +220,7 @@ def proposals(hist, positions, orders, metrics, alerts, now, config=DEFAULTS):
     output = []
     for p in positions:
         t, held, queued = p["ticker"], p["held"], p["queued"]
-        if held <= 0:
+        if held <= 0 and queued <= 0:
             continue
         venue, _, zone, close = prices.venue_info(t, "")
         # At 14:05 Toronto London has closed but New York has not. Use the
@@ -400,7 +400,9 @@ def financial_review(proposed, assessments, ranked, positions, orders, now, conf
     used = set(targets)
     for p in output:
         a = assessments[p[0]]
-        a["scope"] = "Company-specific financing/cash evidence" if a["material"] else "Existing market/sector evidence; no confirmed issuer credit event"
+        a["scope"] = ("Company-specific financing/cash evidence" if a["material"] else
+                      "Company funding watch plus market/sector context; no confirmed issuer credit event" if (a["scores"]["sustainability"] or 0)>=45 else
+                      "Existing market/sector evidence; no confirmed issuer credit event")
         desired = max(0.,p[1]-p[4])
         match = re.search(r"desired cut ([0-9.]+)%",p[5])
         if match:
@@ -408,7 +410,9 @@ def financial_review(proposed, assessments, ranked, positions, orders, now, conf
         if a["material"]:
             desired = max(desired,min(p[1],config["trim_step_pp"]/100))
         eligible = p[11]=="CLEAR" and p[10]=="VERIFIED PRIOR CLOSE" and not unsettled and not p[9].startswith("NONE")
-        why = "Retain allocation: available issuer facts and existing price rules do not jointly justify a new cut."
+        why = "HOLD preferred: no independently justified new risk cut. Cash reduction lacks that trigger; alternatives remain subject to existing valuation/catalyst/entry qualification."
+        if not any(c["state"]=="READY FOR HUMAN REVIEW" for c in ranked):
+            why+=" No unheld replacement currently qualifies."
         if eligible and desired>1e-8:
             already = p[1]-p[4]
             room = max(0.,config["max_cash_pct"]/100-(1-sum(targets.values())))
@@ -442,6 +446,11 @@ def financial_review(proposed, assessments, ranked, positions, orders, now, conf
                 why=f"Desired sell {desired*100:g}pp; {remaining*100:g}pp blocked. Cash is at/near its ceiling; no compliant qualified purchase is available. Retain the blocked portion."
         elif desired>1e-8 and not eligible:
             why="No new financial trade: resolve existing orders/data/execution deadline first; never resubmit an existing instruction."
+        a["reversal"] = ("Resolve cash constraint with a qualified same-session purchase; risk-cut case reverses if existing price weakness clears and issuer funding stabilizes."
+                          if "BLOCKED" in p[15] else
+                          "Reverse cut only after issuer credit/cash deterioration improves and existing price/relative weakness clears; recheck game limits."
+                          if p[4]<p[1] else
+                          "Reassess HOLD on a verified adverse financing event, cash-flow guidance cut or existing price-loss threshold; requalify cash/purchase constraints.")
         a["options"] = why
         p[5] += " | "+finance.summary(a)+" | "+a["scope"]+" | "+why+" Reversal: "+a["reversal"]
         if p[11]=="CLEAR" and p[10]=="VERIFIED PRIOR CLOSE":
@@ -451,7 +460,7 @@ def financial_review(proposed, assessments, ranked, positions, orders, now, conf
             p[16]+=" | "+finance.summary(a)
     if len(output)+len(buys)>20:
         raise RuntimeError("PRICE MONITOR proposal capacity exceeded")
-    if any(w>.25+1e-8 or w<0 for w in targets.values()) or 1-sum(targets.values())>.25+1e-8 or sum(w>0 for w in targets.values())<5:
+    if any(w>.25+1e-8 or w<0 for w in targets.values()) or not -1e-8<=1-sum(targets.values())<=.25+1e-8 or sum(w>0 for w in targets.values())<5:
         raise RuntimeError("Financial proposal fails final portfolio constraints")
     return output+buys
 
@@ -600,7 +609,7 @@ def main(now=None):
     # The price writer precedes this step; SYSTEM/B13 remains health-owned.
     desk = book.worksheet("TRADE DESK")
     requests = []
-    for i, row in enumerate(proposed, 1):
+    for i, row in enumerate((p for p in proposed if p[1]>0), 1):
         bad = row[10] == "FAILED" or row[3] == "UNRESOLVED"
         color = {"red":.98,"green":.84,"blue":.84} if bad else {"red":.96,"green":.97,"blue":.98}
         requests.append({"updateCells":{"range":{"sheetId":desk.id,"startRowIndex":i,"endRowIndex":i+1,"startColumnIndex":1,"endColumnIndex":2},

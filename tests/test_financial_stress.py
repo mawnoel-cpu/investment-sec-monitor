@@ -38,8 +38,8 @@ def proposal(t="AAA",weight=.15,weak=False):
 
 
 def assessment(material=False):
-    a=f.assess("AAA",f.financial_inputs([evidence()],NOW)[0],proposal(),signals(),NOW)
-    a["material"]=material
+    row=evidence(financing_event="covenant_breach",event_verified=True) if material else evidence()
+    a=f.assess("AAA",f.financial_inputs([row],NOW)[0],proposal(),signals(),NOW)
     return a
 
 
@@ -191,6 +191,16 @@ class AllocationExamples(unittest.TestCase):
     def test_pending_order_no_duplicate(self):
         out,_=self.run_case(material=True,ready=True,orders=[["","","AAA","","","Submitted — FT pending"]])
         self.assertEqual(out[0][4],.15);self.assertEqual(len(out),6)
+
+    def test_unheld_queued_buy_remains_in_proposed_cash_total(self):
+        from test_sector_rotation import fixture
+        when=NOW.replace(day=16)
+        ps=[dict(ticker="MSFT",held=.15,queued=.15),dict(ticker="AMGN",held=0,queued=.05)]
+        out=r.proposals(fixture(),ps,[["","","AMGN","","","Submitted — FT pending"]],{},[],when)
+        self.assertEqual(len(out),2)
+        self.assertEqual(out[1][4],.05)
+        self.assertIn("DO NOT RESUBMIT",out[1][16])
+        self.assertAlmostEqual(sum(x[4] for x in out),.20)
 
     def test_deadline_and_holidays(self):
         nov25=NOW.replace(month=11,day=25)
