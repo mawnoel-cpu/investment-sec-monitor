@@ -101,19 +101,29 @@ def financial_replay(hist,evidence,history,start,end):
         material=confirmed or (deteriorating and ps is not None and ps>=45)
         # Future daily receipts can freeze a qualified destination in their
         # FIN_JSON suffix. Absent that evidence, no retrospective replacement.
-        destination=None
+        destination=None;frozen=False
         marker="FIN_JSON="
         if marker in str(f.value(row,18)):
             try:
                 snapshot=json.loads(str(row[18]).split(marker,1)[1])
-                candidate=snapshot.get("qualified_replacement")
-                if candidate and candidate.get("all_gates_passed") and candidate.get("verified_at",float('inf'))<=row[0]:
-                    destination=candidate["ticker"]
+                scores=snapshot.get("scores",{})
+                valid=(snapshot.get("ticker")==t and f.number(snapshot.get("asof"))
+                       and int(row[0])<=snapshot["asof"]<=row[0] and snapshot.get("hash")
+                       and set(scores)==set(f.WEIGHTS)
+                       and all(v is None or f.number(v) and 0<=v<=100 for v in scores.values()))
+                if valid:
+                    # Frozen verified assessment survives later source expiry
+                    # or revisions; never substitute today's rewritten facts.
+                    fs=scores["financing"];ss=scores["sustainability"]
+                    material=bool(snapshot.get("material"));frozen=True
+                    candidate=snapshot.get("qualified_replacement")
+                    if candidate and candidate.get("all_gates_passed") and candidate.get("verified_at",float('inf'))<=row[0]:
+                        destination=candidate["ticker"]
             except (ValueError,KeyError,TypeError):pass
         case={"ticker":t,"decision_captured":when.isoformat(),"price_session":str(day),
               "financing":fs,"sustainability":ss,"price":ps,"financial_material":material,
               "added_to_price_warning":bool(material and (ps is None or ps<70)),
-              "qualified_replacement":destination,"historical_coverage":"verified issuer facts" if data or credit else "UNAVAILABLE; do not backdate today's extraction"}
+              "qualified_replacement":destination,"historical_coverage":"frozen verified FIN_JSON" if frozen else "verified issuer facts" if data or credit else "UNAVAILABLE; do not backdate today's extraction"}
         for n in (5,10):
             future=day
             for _ in range(n):future=r.next_session(future,prices_venue(t))
@@ -125,7 +135,7 @@ def financial_replay(hist,evidence,history,start,end):
             case[f"cash_minus_hold_{n}_pp"]=-ret if material and ret is not None else None
             case[f"replacement_minus_hold_{n}_pp"]=rot if material else None
             case[f"false_alarm_{n}"]=ret>=0 if material and ret is not None else None
-            case[f"missed_warning_{n}"]=ret<=r.DEFAULTS["trim_5d_pct"] if data and not material and ret is not None else None
+            case[f"missed_warning_{n}"]=ret<=r.DEFAULTS["trim_5d_pct"] if (data or frozen) and not material and ret is not None else None
         cases.append(case)
     return {"status":"UNVALIDATED", "method":"Captured/verified/publication/expiry gates; frozen holdings only; unchanged thresholds; 5/10 public-close diagnostics, never FT execution prices.",
             "limitations":"No historical CDS or typed financing records means no test of incremental predictive value. Missing point-in-time replacement qualification prohibits hindsight selection. Cash advantage is unscaled and is not an executable trim or portfolio return.",

@@ -140,6 +140,21 @@ class FinancialEvidenceTests(unittest.TestCase):
         self.assertIsNone(result["cases"][0]["qualified_replacement"])
         self.assertIsNone(result["cases"][0]["cash_minus_hold_5_pp"])
 
+    def test_replay_prefers_frozen_finance_and_rejects_future_snapshot(self):
+        from ft_rotation_replay import financial_replay
+        from test_sector_rotation import fixture
+        from datetime import date
+        a=assessment(True);a["ticker"]="MSFT"
+        row=[p.serial(NOW),"Daily:2026-10-20","MSFT",.15,.15]+[""]*14
+        row[18]="VERIFIED PRIOR CLOSE 2026-10-19 FIN_JSON="+json.dumps(a)
+        h=fixture(date(2026,10,19))
+        out=financial_replay(h,[],[row],NOW.date(),NOW.date())
+        self.assertEqual(out["cases"][0]["financing"],95)
+        self.assertEqual(out["cases"][0]["historical_coverage"],"frozen verified FIN_JSON")
+        a["asof"]+=1;row[18]="FIN_JSON="+json.dumps(a)
+        out=financial_replay(h,[],[row],NOW.date(),NOW.date())
+        self.assertEqual(out["cases_with_issuer_facts"],0)
+
     def test_stale_macro_does_not_stop_existing_price_severity(self):
         rows=signals();rows[0][12]=p.serial(NOW)-5
         a=f.assess("AAA",{},proposal(weak=True),rows,NOW)
