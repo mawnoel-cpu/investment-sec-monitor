@@ -111,6 +111,8 @@ def view_requests(analysis_id, gates_id, analysis_rows, portfolio):
                 requests.append(cell_request(analysis_id,n,4,numeric))
             requests.append(cell_request(analysis_id,n,3,
                 f'=IFNA(XLOOKUP(A{n},{tickers},{weights}),0)'))
+            requests.append(cell_request(analysis_id,n,5,
+                f'=LET(w,C{n},tar,D{n},q,IFNA(XLOOKUP(A{n},{tickers},Portfolio!$D$8:INDEX(Portfolio!$D:$D,MATCH("TOTAL",Portfolio!$A:$A,0)-1)),w),IF(q<>w,"ALREADY QUEUED - DO NOT RESUBMIT",IF(w=0,IF(tar>0,"BUY","NOT HELD"),IF(tar<w,IF(tar=0,"ROTATE TO CASH","TRIM TO CASH"),IF(tar>w,"BUY","HOLD")))))'))
     last = 3+len(rows)
     total = last+1
     for column, formula in [
