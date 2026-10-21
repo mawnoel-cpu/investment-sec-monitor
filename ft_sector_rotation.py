@@ -16,6 +16,7 @@ import re
 
 import ft_price_writer as prices
 import ft_financial_stress as finance
+import ft_trade_desk as desk_views
 from ft_rotation_universe import SECTORS, INDUSTRIES, COMPANY_SECTOR, COMPANY_INDUSTRY
 
 END = date(2026, 11, 27)
@@ -507,8 +508,16 @@ def main(now=None):
     portfolio = prices.portfolio_rows(book.worksheet("Portfolio"))
     orders = book.worksheet("Trade Log").get("A8:K1000", value_render_option="UNFORMATTED_VALUE")
     positions = parse_positions(portfolio)
+    # A view failure stays visible but must not disable independent price-risk
+    # proposals. Preserve existing human targets and orders in either case.
+    view_faults = []
+    try:
+        desk_views.sync_views(book, portfolio)
+    except Exception as exc:
+        view_faults.append(f"TRADE ANALYSIS / PRICE GATES: view sync failed: {type(exc).__name__}: {str(exc)[:300]}")
     raw = book.worksheet("DAILY CLOSES").get(f"A5:J{prices.DATA_LAST_ROW}", value_render_option="UNFORMATTED_VALUE")
     hist, locations, faults = load_archive(raw)
+    faults.extend(view_faults)
     end = prices.last_completed(now, *prices.venue_info("SPY", "")[2:])
     groups = group_metrics(hist, end)
     missing = [t for t, m in groups.items() if m["score"] is None]
@@ -591,7 +600,7 @@ def main(now=None):
         # Only an explicitly labelled suffix is calculation-owned. Keep human
         # recommendation prose and all target/formula columns intact.
         analysis=book.worksheet("TRADE ANALYSIS")
-        for n,row in enumerate(analysis.get("A4:F20", value_render_option="UNFORMATTED_VALUE"),4):
+        for n,row in enumerate(analysis.get("A4:F100", value_render_option="UNFORMATTED_VALUE"),4):
             t=val(row,0)
             if t in assessments:
                 old=str(val(row,5)).split("\nFINANCIAL STRESS [")[0]
@@ -650,3 +659,4 @@ if __name__ == "__main__":
         # or interrupted run. Never turn it into successful HOLD decisions.
         print(json.dumps({"status": "FAILED", "error": str(exc)[:400]}))
         raise
+

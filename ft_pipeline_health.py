@@ -245,6 +245,58 @@ def rotation_health(now, receipt, proposed, portfolio, runs):
     return faults
 
 
+def view_health(portfolio, analysis, gates):
+    """A saved review cannot hide omitted holdings or incorrect cash totals."""
+    faults = []
+    held = {r[0]: r for r in portfolio if len(r)>3 and isinstance(r[2],(int,float)) and r[2]>0}
+    end = next((i for i,r in enumerate(analysis) if value(r,0)=="TOTAL SELL"),None)
+    if end is None:
+        return ["TRADE ANALYSIS!A4:M100: TOTAL SELL boundary missing"]
+    body, total = analysis[:end], analysis[end]
+    for n,r in enumerate(body,4):
+        if value(r,0) and not isinstance(value(r,3),(int,float)):
+            faults.append(f"TRADE ANALYSIS!D{n}: nonnumeric target; displayed percentage may be excluded from totals")
+    for ticker, position in held.items():
+        matches = [(n,r) for n,r in enumerate(body,4) if value(r,0)==ticker]
+        if len(matches)!=1:
+            faults.append(f"TRADE ANALYSIS!A4:D{end+3}: {ticker} missing/duplicate held row")
+        elif not isinstance(value(matches[0][1],2),(int,float)) or abs(matches[0][1][2]-position[2])>1e-8:
+            faults.append(f"TRADE ANALYSIS!C{matches[0][0]}: {ticker} held weight differs from Portfolio")
+        gate = [(n,r) for n,r in enumerate(gates,75) if value(r,0)==ticker]
+        if len(gate)!=1:
+            faults.append(f"PRICE GATES!A75:K93: {ticker} missing/duplicate current holding")
+        elif (not isinstance(value(gate[0][1],1),(int,float)) or gate[0][1][1]<=0
+                or value(gate[0][1],9)!="OK"):
+            faults.append(f"PRICE GATES!B{gate[0][0]}:J{gate[0][0]}: {ticker} price gate unavailable")
+    proposed = sum(value(r,3,0) for r in body if isinstance(value(r,3),(int,float)))
+    for col,expected in ((7,proposed),(10,1-proposed)):
+        actual = value(total,col)
+        if not isinstance(actual,(int,float)) or abs(actual-expected)>1e-8:
+            letter = "H" if col==7 else "K"
+            faults.append(f"TRADE ANALYSIS!{letter}{end+4}: allocation total mismatch; expected {expected:.6f}")
+    return faults
+
+
+def performance_status(now, rows, displayed_value, portfolio_equity):
+    """Account freshness is disclosed; absent manual FT data never blocks risk cuts."""
+    verified = [(n,r) for n,r in enumerate(rows,9)
+                if value(r,2)=="Verified — screenshot"
+                and isinstance(value(r,22),(int,float))
+                and isinstance(value(r,1),(int,float)) and r[1]>0
+                and r[22]<=prices.serial(now)]
+    if not verified:
+        return "NO VERIFIED ACCOUNT VALUE — overall game profit/loss unknown", []
+    n,row = max(verified,key=lambda x:x[1][22])
+    faults = []
+    for label, actual in (("PERFORMANCE!B4",displayed_value),("Portfolio!F3",portfolio_equity)):
+        if not isinstance(actual,(int,float)) or abs(actual-row[1])>1e-8:
+            faults.append(f"{label}: differs from latest verified PERFORMANCE!B{n}")
+    day = prices.day_of(row[22])
+    stale = "CURRENT-DATE ACCOUNT SNAPSHOT" if day==now.date() else "OLDER ACCOUNT SNAPSHOT — current overall profit/loss unknown"
+    stamp = (prices.EPOCH+timedelta(days=row[22])).strftime("%d %b %H:%M")
+    return f"{stale}; {stamp}; {row[1]:,.0f} credits; since100,000 {row[1]/100000-1:+.2%}; not a closing-settlement or trade-return attribution", faults
+
+
 def main(now=None):
     injected_now = now is not None
     now = now or datetime.now(prices.TORONTO)
@@ -272,6 +324,15 @@ def main(now=None):
         faults.append("DAILY CLOSES!L5:P200: fresh post12:20 pretrade receipt missing")
     price_state = "FAILED" if faults else "SAVED"
     portfolio = prices.portfolio_rows(book.worksheet("Portfolio"))
+    analysis = book.worksheet("TRADE ANALYSIS").get("A4:M100",value_render_option="UNFORMATTED_VALUE")
+    gates = book.worksheet("PRICE GATES").get("A75:K93",value_render_option="UNFORMATTED_VALUE")
+    view_faults = view_health(portfolio,analysis,gates)
+    performance = book.worksheet("PERFORMANCE")
+    performance_note, performance_faults = performance_status(now,
+        performance.get("A9:W100",value_render_option="UNFORMATTED_VALUE"),
+        value(value(performance.get("B4",value_render_option="UNFORMATTED_VALUE"),0,[]),0),
+        value(value(book.worksheet("Portfolio").get("F3",value_render_option="UNFORMATTED_VALUE"),0,[]),0))
+    faults.extend(view_faults+performance_faults)
     monitor = book.worksheet("PRICE MONITOR")
     faults.extend(rotation_health(now, monitor.get("U195:V202", value_render_option="UNFORMATTED_VALUE"),
         monitor.get("A2051:Q2070", value_render_option="UNFORMATTED_VALUE"), portfolio,
@@ -295,6 +356,13 @@ def main(now=None):
     research, review, issues = evaluate(now, intake, reviews, snapshots, required, verified)
     faults.extend(issues)
     health = book.worksheet("BACKEND HEALTH")
+    checks = [["WORKBOOK CONSISTENCY","FAILED" if view_faults+performance_faults else "PASS",
+               " | ".join(view_faults+performance_faults) or "Current holdings, allocation totals and account-value links agree"],
+              ["ACCOUNT PERFORMANCE",performance_note,"Account value is separate from stock momentum and workflow completion"]]
+    if health.get("A41:C42",value_render_option="FORMATTED_VALUE") != checks:
+        health.update(range_name="A41:C42",values=checks,value_input_option="RAW")
+        if health.get("A41:C42",value_render_option="FORMATTED_VALUE") != checks:
+            raise RuntimeError("BACKEND HEALTH!A41:C42: consistency/performance readback mismatch")
     if health.row_count < 1000:
         health.resize(rows=1000)
     headers = ["CHECKED AT", "PRICE WRITE", "RESEARCH WRITE", "REVIEW WRITE",
@@ -382,3 +450,4 @@ def main(now=None):
 
 if __name__ == "__main__":
     main()
+

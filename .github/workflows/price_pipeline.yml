@@ -8,6 +8,8 @@ on:
       - "ft_price_writer.py"
       - "tests/test_price_writer.py"
       - "ft_pipeline_health.py"
+      - "ft_trade_desk.py"
+      - "tests/test_trade_desk_views.py"
       - "tests/test_pipeline_health.py"
       - "ft_rotation_universe.py"
       - "ft_sector_rotation.py"
@@ -76,3 +78,4 @@ jobs:
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
         run: python ft_pipeline_health.py
+
