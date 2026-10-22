@@ -278,6 +278,7 @@ def collect(spreadsheet: Any, feed_ws: Any, now: datetime) -> dict[str, Any]:
     rows: list[list[Any]] = []
     duplicates = 0
     failures: list[str] = list(universe_failures)
+    non_sec_listings: list[str] = []
     checked = 0
     successful = 0
     skipped_old = 0
@@ -286,7 +287,12 @@ def collect(spreadsheet: Any, feed_ws: Any, now: datetime) -> dict[str, Any]:
         sec_ticker = ft_ticker.split(":", 1)[0].upper()
         issuer = mapping.get(sec_ticker)
         if issuer is None:
-            failures.append(f"{ft_ticker}: no SEC ticker mapping")
+            if ft_ticker.upper().endswith(":LSE"):
+                # UK-listed companies without an SEC identity require UK primary filings.
+                # This is an explicit discovery-coverage exclusion, not an HTTP failure.
+                non_sec_listings.append(ft_ticker)
+            else:
+                failures.append(f"{ft_ticker}: no SEC ticker mapping")
             continue
 
         checked += 1
@@ -358,6 +364,8 @@ def collect(spreadsheet: Any, feed_ws: Any, now: datetime) -> dict[str, Any]:
         f"FT Game SEC discovery feed; holdings + candidate pool + retained backups; "
         f"{len(universe)} unique issuer tickers; ignored {skipped_old} pre-game filings. "
         + ("; ".join(failures) if failures else "No issuer failures.")
+        + (f" Outside US SEC filing scope (UK listing): {', '.join(non_sec_listings)}; check UK issuer/regulatory originals."
+           if non_sec_listings else "")
     )
     append_run_log(spreadsheet, feed_ws, status, checked, len(rows), duplicates, len(failures), notes)
 
