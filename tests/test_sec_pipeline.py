@@ -294,6 +294,44 @@ class Tests(unittest.TestCase):
         self.assertIsInstance(ws.cells[(8, 15)], float)
 
 
+    def test_uk_listing_without_sec_mapping_is_explicit_coverage_exclusion(self):
+        import ft_sec_pipeline as pipeline
+        from unittest.mock import Mock, patch
+        ws = Sheet()
+        book = Book(ws)
+        book.worksheet = lambda name: Mock() if name == "Portfolio" else ws
+        with (patch.object(pipeline, 'SecClient') as sec,
+              patch.object(pipeline, 'portfolio_universe', return_value=['TLW:LSE', 'MU']),
+              patch.object(pipeline, 'research_universe', return_value=(['TLW:LSE', 'MU'], [])),
+              patch.object(pipeline, 'ticker_map', return_value={'MU': {'cik': '0001', 'title': 'Micron'}})):
+            sec.return_value.get_json.return_value = {'filings': {'recent': {'form': []}}}
+            result = pipeline.collect(book, ws, datetime(2026, 10, 22, 14,
+                                             tzinfo=ZoneInfo('America/Toronto')))
+        self.assertEqual(result['status'], 'Success')
+        self.assertEqual(result['issuers_checked'], 1)
+        self.assertEqual(result['failures'], [])
+        self.assertEqual(ws.cells[(7, 16)], 'Success')
+        self.assertIn('TLW:LSE', ws.cells[(7, 21)])
+        self.assertIn('UK issuer/regulatory originals', ws.cells[(7, 21)])
+
+    def test_unmapped_us_ticker_remains_partial_failure(self):
+        import ft_sec_pipeline as pipeline
+        from unittest.mock import Mock, patch
+        ws = Sheet()
+        book = Book(ws)
+        book.worksheet = lambda name: Mock() if name == "Portfolio" else ws
+        with (patch.object(pipeline, 'SecClient') as sec,
+              patch.object(pipeline, 'portfolio_universe', return_value=['MU', 'FAKETICKER']),
+              patch.object(pipeline, 'research_universe', return_value=(['MU', 'FAKETICKER'], [])),
+              patch.object(pipeline, 'ticker_map', return_value={'MU': {'cik': '0001', 'title': 'Micron'}})):
+            sec.return_value.get_json.return_value = {'filings': {'recent': {'form': []}}}
+            result = pipeline.collect(book, ws, datetime(2026, 10, 22, 14,
+                                             tzinfo=ZoneInfo('America/Toronto')))
+        self.assertEqual(result['status'], 'Partial')
+        self.assertIn('FAKETICKER: no SEC ticker mapping', result['failures'])
+        self.assertEqual(ws.cells[(7, 16)], 'Partial')
+
+
 if __name__ == '__main__':
     unittest.main()
 
