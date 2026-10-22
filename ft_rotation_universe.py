@@ -32,7 +32,7 @@ COMPANY_SECTOR.update({
     **dict.fromkeys(("ALAB", "CIEN", "MU", "ANET", "CRWV", "NBIS", "CRM", "NOW", "DDOG", "PLTR", "PANW", "CRWD"), "XLK"),
     **dict.fromkeys(("GEV", "PWR", "ETN", "VRT", "LMT", "AVAV", "RKLB", "UBER"), "XLI"),
     **dict.fromkeys(("FANG", "PSX", "TLW:LSE", "VLO", "MPC", "KMI"), "XLE"),
-    "BHP:LSE": "XLB", "VRTX": "XLV", "PGR": "XLF", "NRG": "XLU", "CEG": "XLU",
+    "BHP:LSE": "XLB", "VRTX": "XLV", "PGR": "XLF", "CB": "XLF", "CME": "XLF", "NRG": "XLU", "CEG": "XLU",
 })
 COMPANY_INDUSTRY = {
     **dict.fromkeys(("ALAB", "MU", "NVDA", "AVGO"), "SOXX"),
@@ -41,7 +41,7 @@ COMPANY_INDUSTRY = {
     **dict.fromkeys(("PSX", "MPC", "VLO"), "CRAK"),
     **dict.fromkeys(("FANG", "EOG", "TLW:LSE"), "XOP"),
     "BHP:LSE": "COPX", "FCX": "COPX", "NEM": "GDX", "KMI": "AMLP",
-    "PGR": "KIE", "JPM": "KBE", "LMT": "XAR", "RTX": "XAR", "AVAV": "XAR",
+    "PGR": "KIE", "CB": "KIE", "CME": "XLF", "JPM": "KBE", "LMT": "XAR", "RTX": "XAR", "AVAV": "XAR",
 }
 NASDAQ = {"MSFT", "NVDA", "AVGO", "META", "GOOGL", "NFLX", "AMZN", "TSLA", "COST", "AMGN", "EQIX"}
 
@@ -51,4 +51,7 @@ def extra_symbols():
     for _, members in SECTORS.values():
         for t in members:
             result[t] = ("NASDAQ:" if t in NASDAQ else "NYSE:") + ("BRK.B" if t == "BRK-B" else t)
+    # Actual FT holdings beyond the fixed three-company sector-breadth samples.
+    # Include quote mappings without changing the point-in-time breadth denominator.
+    result.update({"CB": "NYSE:CB", "CME": "NASDAQ:CME"})
     return result
