@@ -8,9 +8,10 @@ on:
     branches: [main]
     paths: ['ft_kalshi_*.py', 'tests/test_kalshi*.py', '.github/workflows/kalshi_pipeline.yml']
   schedule:
-    # 13:00 Toronto, allowing 105 minutes before the 14:45 review. GitHub may delay runs.
-    - cron: '0 17 * 10 1-5'
-    - cron: '0 18 1-27 11 1-5'
+    # 10:50 Toronto, allowing for observed 2-4h GitHub scheduling delays.
+    # Same single daily collector. On-time data remain <4h old at the 14:45 review.
+    - cron: '50 14 * 10 1-5'
+    - cron: '50 15 1-27 11 1-5'
 
 permissions:
   contents: read
