@@ -305,7 +305,8 @@ def tracking(book):
             tracked[r[0]]=r[2]
     # The research universe is broader than the nine PRICE GATES replacements.
     # Read current symbols instead of freezing yesterday's holdings in code.
-    for r in book.worksheet("CANDIDATE POOL").get("A5:D104"):
+    pool = book.worksheet("CANDIDATE POOL")
+    for r in pool.get(f"A5:D{pool.row_count}"):
         if len(r) >= 4 and r[0] and ":" in str(r[3]):
             tracked[str(r[0]).strip()] = str(r[3]).strip()
     for r in mon.get("A39:C48"):
@@ -337,7 +338,7 @@ def existing_keys(ws):
 
     A date/ticker string alone is not proof that an EOD session was verified.
     """
-    values=ws.get(f"A5:J{DATA_LAST_ROW}",value_render_option="UNFORMATTED_VALUE")
+    values=ws.get(f"A5:J{ws.row_count}",value_render_option="UNFORMATTED_VALUE")
     keys=set()
     verified=set()
     last=4
@@ -402,14 +403,14 @@ def append_rows(ws,start,rows):
 
 
 def save_log(ws,when,mode,state,total,failures,row_number=None):
-    history=ws.get("L5:P200",value_render_option="UNFORMATTED_VALUE")
+    history=ws.get(f"L5:L{ws.row_count}",value_render_option="UNFORMATTED_VALUE")
     start=5
     for i,row in enumerate(history):
         if row and row[0] not in ("",None):
             start=6+i
     start = row_number or start
-    if start>200:
-        raise RuntimeError("DAILY CLOSES price-run log full L5:P200")
+    if start > ws.row_count:
+        ws.add_rows(max(200, start - ws.row_count + 100))
     ws.update(range_name=f"L{start}:P{start}",values=[[serial(when),mode,state,total," | ".join(failures)[:48000]]],value_input_option="RAW")
     ws.spreadsheet.batch_update({"requests":[{"repeatCell":{"range":{"sheetId":ws.id,"startRowIndex":start-1,"endRowIndex":start,"startColumnIndex":11,"endColumnIndex":12},"cell":{"userEnteredFormat":{"numberFormat":{"type":"DATE_TIME","pattern":"dd mmm yyyy HH:mm"}}},"fields":"userEnteredFormat.numberFormat"}}]})
     return start
@@ -500,8 +501,9 @@ def main(mode="close",now=None):
                 bad.append(t+": unexpected "+str(exc)[:100])
                 faults[t]="COLLECTOR FAILURE: DAILY CLOSES!A:J for "+t+"; "+str(exc)[:170]
     rows.sort(key=lambda r:(r[0],r[1]))
-    if last+len(rows)>DATA_LAST_ROW:
-        raise RuntimeError("DAILY CLOSES capacity exceeded; no overwrite performed")
+    if last + len(rows) > ws.row_count:
+        # Extend the existing archive before writing; never overwrite another block.
+        ws.add_rows(max(1000, last + len(rows) - ws.row_count + 500))
     if rows:
         append_rows(ws,last+1,rows)
         # Native date and capture-time formatting for appended numeric serials.
@@ -514,7 +516,7 @@ def main(mode="close",now=None):
     save_log(ws,completed_at,mode,state,len(tracked),bad + [receipt], row_number=logrow)
     mark_fault_notes(book,faults)
     # Explicit readback before reporting a successful write.
-    log=ws.get("L5:P200",value_render_option="UNFORMATTED_VALUE")
+    log=ws.get(f"L5:P{max(200, logrow)}",value_render_option="UNFORMATTED_VALUE")
     latest=[r for r in log if r and r[0] not in ("",None)][-1]
     if str(latest[2])!=state or str(latest[1])!=mode:
         raise RuntimeError("price run-log write/readback mismatch")
