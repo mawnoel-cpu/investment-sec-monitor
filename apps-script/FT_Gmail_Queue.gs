@@ -285,7 +285,7 @@ function ftGmailQueueScreen() {
 }
 
 function ftResearchIsPromotion_(subject) {
-  return /(?:\\bwelcome\\b|here's where to start|you're in\\.|one step away|\\bwebinar\\b|\\bsubscribe\\b|\\bfree access\\b|\\bjoin now\\b|\\bretire\\b|\\bretirement\\b|\\bquiz\\b|your favorite|members got|\\bdiscount\\b|\\bspecial offer\\b)/i.test(String(subject||""));
+  return /(?:\\bwelcome\\b|here's where to start|you're in\\.|one step away|\\bwebinar\\b|\\bsubscribe\\b|\\bfree access\\b|\\bjoin now\\b|\\bquiz\\b|your favorite|members got|\\bdiscount\\b|\\bspecial offer\\b)/i.test(String(subject||""));
 }
 
 function ftResearchTheme_(text) {
