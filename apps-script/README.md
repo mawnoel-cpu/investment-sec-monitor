@@ -60,3 +60,59 @@ The module now stores formula-like email subjects as literal text and logs colle
 - `PARTIAL DISCOVERY` here is the normal per-run page limit: the successful run saved its cursor and the next scheduled run can resume at offset 75. It is not evidence that the entire new search window has finished or that any queued research has been verified.
 - The original private backup passes archive integrity checks. The tested queue source still matches the repository blob exactly. No original project source, manifest, unrelated trigger, Gmail message, Evidence row, portfolio order or trade was changed during this verification.
 - Queue installation, manual collection, the 30-minute trigger and a successful automatic workbook write are now verified.
+
+
+## Seeking Alpha headline/preview evidence bridge — 22 October 2026
+
+The pre-existing `ftGmailQueueCollect` trigger still runs every 30 minutes.
+The current GitHub version of `FT_Gmail_Queue.gs` additionally calls
+`ftGmailQueueScreen_` after discovery. This is an **extension of the same
+queue**, not a second research collector or additional scheduled trigger.
+It reads up to eight queued Seeking Alpha messages per scheduled run,
+extracts newsletter-visible teasers, and writes one idempotent entry per Gmail
+message into the existing `Evidence` tab. No email is modified. It does not
+touch Portfolio, Trade Log, execution or trade targets.
+
+The bridge uses the original `FT GMAIL QUEUE!A:J` metadata/status schema
+and the existing `Evidence!A:T` research schema. It checks previously
+ingested Gmail IDs in Evidence!O to prevent duplicates. Every preview is
+recorded with `J=Unverified`, `G=0` (no scored direction), source-specific
+publisher attribution, `Q=Excerpt` or `Headline only`, a factual access
+limitation and a follow-up issuer/price-check question. Existing `K` and
+`L` scoring formulas consequently evaluate to **zero**. No premium article
+is represented as read; previews cannot independently justify a trade.
+
+The screening step reads the complete email **digest**, not the original
+linked/premium article. A mixed-topic newsletter can include useful company
+teasers even if its subject sounds unrelated. Explicit onboarding/marketing
+emails are excluded. Screening respects the game end date and retains
+`PENDING` when Evidence readback fails. A screening error is visible
+separately and does not undo the successful discovery receipt.
+
+**Live deployment is not automatic.** This repository contains a source
+copy of one Apps Script module, not an authenticated `clasp` deployment to
+the spreadsheet-bound script. An owner/editor must:
+
+1. Open FT Game Intelligence > Extensions > Apps Script, back up its current
+   `FT_Gmail_Queue.gs`, and compare it with the
+   [GitHub source](https://github.com/mawnoel-cpu/investment-sec-monitor/blob/main/apps-script/FT_Gmail_Queue.gs).
+   Replace **only** the separate `FT_Gmail_Queue.gs` module, not `Code.gs`,
+   `SecCollector.gs`, other manifest entries, or script properties.
+2. Save, run `ftGmailQueueScreen` once with existing Gmail/Sheets
+   authorizations, and inspect its log. The 22 October manual backfill was
+   entered directly into Evidence!308:319 with exact Gmail IDs; the same
+   emails are now SCREENED. Therefore this first run can legitimately save
+   zero new records. It must not duplicate those rows.
+3. Confirm that exactly one existing `ftGmailQueueCollect` 30-minute trigger
+   still exists; **do not** run `ftGmailQueueInstallTrigger` a second time.
+   Observe a subsequent scheduled collector execution and check that
+   a new Seeking Alpha digest goes from PENDING to SCREENED, with an Evidence
+   Gmail ID, `J=Unverified`, and calculated `K=L=0`.
+4. Check normal daily FT research review independently; a saved zero-weight
+   lead is an early warning, **not** proof the original claim has been
+   verified, nor a ready-to-trade recommendation.
+
+The manual backfill saved 12 Seeking Alpha leads to
+`Evidence!A308:T319` and read back `K=L=0`; the separate manual
+`TRADE DESK!B13` note records the unresolved live deployment.
+Offline test validation: `node --test tests/test_ft_gmail_queue.cjs`.
