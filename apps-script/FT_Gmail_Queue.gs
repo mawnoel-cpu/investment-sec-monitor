@@ -22,6 +22,10 @@ var FT_GMAIL_QUEUE = Object.freeze({
 
 function ftGmailQueueCollect() {
   var result = ftQueueCollect_();
+  // Use the EXISTING 30-minute trigger: no second schedule or research system.
+  // The research receipt is separate, and a screening error never rewinds discovery.
+  try { result.research = ftGmailQueueScreen_(); }
+  catch (err) { result.research = {status:"FAILED",error:String(err).slice(0,250)}; }
   console.log(JSON.stringify(result));
   return result;
 }
@@ -262,3 +266,185 @@ function ftGmailQueueRemoveTrigger() {
   return {removed:triggers.length};
 }
 
+
+/**
+ * Evidence bridge for Seeking Alpha Must Reads and other Seeking Alpha digests.
+ * Does NOT read premium articles. Does NOT verify publisher claims, score a
+ * direction, touch orders, modify Gmail or create another recurring trigger.
+ *
+ * Reuse the existing queue, Evidence ledger and time trigger. A headline/preview
+ * is a zero-eligible-weight research lead, never a trading signal.
+ */
+var FT_SA_SCREEN = Object.freeze({maxPerRun:8, maxMessageChars:32000,
+  maxExcerptChars:1000, gameEnd:"2026-11-27"});
+
+function ftGmailQueueScreen() {
+  var response=ftGmailQueueScreen_();
+  console.log(JSON.stringify(response));
+  return response;
+}
+
+function ftResearchIsPromotion_(subject) {
+  return /(?:\\bwelcome\\b|here's where to start|you're in\\.|one step away|\\bwebinar\\b|\\bsubscribe\\b|\\bfree access\\b|\\bjoin now\\b|\\bretire\\b|\\bretirement\\b|\\bquiz\\b|your favorite|members got|\\bdiscount\\b|\\bspecial offer\\b)/i.test(String(subject||""));
+}
+
+function ftResearchTheme_(text) {
+  text=String(text||"").toLowerCase();
+  if (/\\bhealthcare\\b|\\bbiotech\\b|\\bpharma\\b|\\binsurer\\b/.test(text))
+    return "HEALTHCARE_ROTATION";
+  if (/\\bcredit\\b|\\bfinanc\\w*|capex|\\bcash crunch\\b|\\bai bubble\\b/.test(text))
+    return "AI_FINANCING_RISK";
+  if (/\\bsemiconductor\\b|\\bmicron\\b|\\bhynix\\b|memory price|\\bchip\\b/.test(text))
+    return "SEMICONDUCTOR_CYCLE";
+  if (/\\bbreadth\\b|under the hood|\\bconcentration\\b|\\bmarket leadership\\b|\\bbear market\\b/.test(text))
+    return "MARKET_BREADTH";
+  if (/\\boil\\b|\\benergy\\b|\\bnatural gas\\b|\\br[ea]fin/.test(text))
+    return "ENERGY_ROTATION";
+  if (/\\brocket lab\\b|\\bneutron\\b|\\brklb\\b/.test(text))
+    return "SPACE_VALUATION";
+  if (/\\bearnings\\b|\\bupgrade\\b|\\bvaluation\\b/.test(text))
+    return "COMPANY_RESEARCH";
+  return "MACRO_RESEARCH";
+}
+
+function ftResearchQuestion_(theme) {
+  var questions={
+    HEALTHCARE_ROTATION:"Compare healthcare/insurer relative strength and issuer catalysts against held positions.",
+    AI_FINANCING_RISK:"Cross-check AI capex/funding claims against issuer cash flow, debt and funding terms.",
+    SEMICONDUCTOR_CYCLE:"Check memory prices, primary results and sector-relative leadership; do not infer future earnings.",
+    MARKET_BREADTH:"Verify advance/decline, sector dispersion and relative strength on dated prices.",
+    ENERGY_ROTATION:"Check crude/refining trends and cash-flow updates versus the existing energy holdings.",
+    SPACE_VALUATION:"Validate RKLB launch timetable, funding and sales multiples against issuer filings.",
+    COMPANY_RESEARCH:"Locate named issuer, dated original disclosures and compare entry/valuation.",
+    MACRO_RESEARCH:"Identify dated, falsifiable market claims and independent supporting evidence."
+  };
+  return questions[theme]||questions.MACRO_RESEARCH;
+}
+
+function ftResearchDigestPreview_(plain, subject) {
+  var lines=String(plain||"").slice(0,FT_SA_SCREEN.maxMessageChars).split(/\\r?\\n/);
+  var chosen=[], seen={};
+  for(var i=0;i<lines.length&&chosen.length<4;i++){
+    var line=String(lines[i]||"").trim();
+    // On Must Reads, full article text is NOT embedded. Extract only
+    // visible teaser sentences; never claim to have read linked articles.
+    var md=line.match(/^\\[([^\\]]{35,})\\]\\(/);
+    if(md) line=md[1].trim();
+    if(!line||line.length<50||line.length>650||
+      /https?:|unsubscribe|premium|special offer|sent by seeking alpha|sponsored|scan to download|your email|\\bjoin now\\b|\\btrading with\\b/i.test(line))
+      continue;
+    if(line.toLowerCase()===String(subject||"").toLowerCase()||seen[line])continue;
+    seen[line]=1;chosen.push(line);
+  }
+  return chosen.join(" | ").slice(0,FT_SA_SCREEN.maxExcerptChars);
+}
+
+function ftResearchEvidenceRow_(row, subject, preview, observed, captured) {
+  var msgId=String(row[0]), title=String(subject||row[5]||"").slice(0,240);
+  var theme=ftResearchTheme_(title+" "+preview);
+  var ticker=String(row[3]||"").trim()||"Macro";
+  var relevant=ftResearchQuestion_(theme);
+  var info="Seeking Alpha email digest ONLY. Subject: "+title+
+    ". Preview: "+(preview||"not provided; title only")+
+    ". Full linked articles, claims and price targets NOT independently read or verified.";
+  var n=0; // Caller substitutes actual row number in formula cells.
+  return {ticker:ticker,theme:theme,
+    research:"Theme "+theme+"; "+relevant+" DISCOVERY ONLY, no order, 0 eligible research weight.",
+    info:ftQueueLiteral_(info.slice(0,1650)),
+    title:ftQueueLiteral_(title),
+    observed:observed,captured:captured,
+    source:"https://mail.google.com/mail/u/0/#all/"+encodeURIComponent(msgId),
+    msgId:msgId,extraction:preview?"Excerpt":"Headline only"};
+}
+
+function ftQueueScreenEvidenceCells_(item, n) {
+  var v=function(x){return x;};
+  return [
+    "GMAIL.SA.PREVIEW."+item.msgId,item.ticker,item.observed,item.info,item.source,
+    "=IFNA(VLOOKUP(M"+n+",Sources!$J$8:$M$200,4,FALSE),0)",
+    0,14,"=IF(C"+n+"=\"\",\"\",TODAY()-INT(C"+n+"))",
+    "Unverified",
+    "=IF(AND(J"+n+"=\"Valid\",ISNUMBER(C"+n+"),I"+n+">=0,I"+n+"<=H"+n+
+      ",OR(Q"+n+"=\"Full\",Q"+n+"=\"Excerpt\",Q"+n+"=\"Data\")),F"+n+",0)",
+    "=K"+n+"*G"+n,
+    "Seeking Alpha","Contributor digest / preview",item.msgId,item.captured,
+    item.extraction,"GMAIL:SA:"+item.msgId,item.title,item.research
+  ];
+}
+
+function ftGmailQueueScreen_() {
+  var lock=LockService.getScriptLock();
+  if(!lock.tryLock(1000))return {status:"BUSY",reason:"Screening lock held"};
+  try {
+    var today=Utilities.formatDate(new Date(),"America/Toronto","yyyy-MM-dd");
+    if(today>FT_SA_SCREEN.gameEnd)return {status:"SKIPPED",reason:"Game ended"};
+    var book=SpreadsheetApp.openById(FT_GMAIL_QUEUE.spreadsheetId);
+    var queue=book.getSheetByName(FT_GMAIL_QUEUE.sheet);
+    var evidence=book.getSheetByName("Evidence");
+    if(!queue||!evidence)return {status:"NOT DEPLOYED",reason:"Queue or Evidence missing"};
+    var rows=Math.max(0,queue.getLastRow()-1), saved=0, excluded=0,
+      duplicates=0, scanned=0, failed=0;
+    if(!rows)return {status:"EMPTY",saved:0};
+    var q=queue.getRange(2,1,rows,10).getValues();
+    // Source identity is the Gmail message ID, NOT the subject. The same
+    // subject can recur and different digests may contain identical teasers.
+    var erows=evidence.getMaxRows();
+    var evidenceIds=evidence.getRange(8,15,erows-7,1).getValues();
+    var used=evidence.getRange(8,1,erows-7,1).getValues();
+    var seen={};
+    var last=7;
+    evidenceIds.forEach(function(x){if(x[0])seen[String(x[0])]=true;});
+    used.forEach(function(x,i){if(x[0])last=i+8;});
+    var target=[];
+    for(var i=0;i<q.length;i++){
+      var r=q[i];
+      if(String(r[4]||"").toLowerCase()!=="seekingalpha.com" ||
+        String(r[6])!=="PENDING")continue;
+      target.push({index:i,row:r});
+    }
+    // Check most recent subject-level risk leads first, but retain all other
+    // pending records for future runs; do not silently discard older emails.
+    target.sort(function(a,b){return String(b.row[1]).localeCompare(String(a.row[1]));});
+    for(var j=0;j<target.length&&scanned<FT_SA_SCREEN.maxPerRun;j++){
+      var item=target[j], r=item.row, msgId=String(r[0]), qr=item.index+2;
+      scanned++;
+      try {
+        if(seen[msgId]){
+          queue.getRange(qr,7,1,4).setValues([["SCREENED",Number(r[7]||0)+1,
+            new Date().toISOString(),"Already in Evidence; existing record preserved"]]);
+          duplicates++;continue;
+        }
+        if(ftResearchIsPromotion_(r[5])){
+          queue.getRange(qr,7,1,4).setValues([["EXCLUDED",Number(r[7]||0)+1,
+            new Date().toISOString(),"Marketing/admin/retirement topic; not an FT Game stock signal"]]);
+          excluded++;continue;
+        }
+        var msg=GmailApp.getMessageById(msgId);
+        if(!msg)throw new Error("Gmail message not accessible");
+        var plain=msg.getPlainBody();
+        var preview=ftResearchDigestPreview_(plain,r[5]);
+        var record=ftResearchEvidenceRow_(r,msg.getSubject(),preview,msg.getDate(),new Date());
+        var targetRow=last+1;
+        if(targetRow>evidence.getMaxRows())
+          evidence.insertRowsAfter(evidence.getMaxRows(),Math.max(50,targetRow-evidence.getMaxRows()));
+        var vals=ftQueueScreenEvidenceCells_(record,targetRow);
+        // Never touch financial fields U:Z. Age/eligibility are existing
+        // ledger formulas, and J=Unverified forces zero eligible weight.
+        evidence.getRange(targetRow,1,1,20).setValues([vals]);
+        SpreadsheetApp.flush();
+        if(String(evidence.getRange(targetRow,15).getValue())!==msgId||
+          String(evidence.getRange(targetRow,1).getValue())!==vals[0]||
+          Number(evidence.getRange(targetRow,11).getValue())!==0)
+          throw new Error("Evidence readback/zero-weight guard failed; queue remains pending");
+        last=targetRow;seen[msgId]=true;
+        queue.getRange(qr,7,1,4).setValues([["SCREENED",Number(r[7]||0)+1,
+          new Date().toISOString(),"Evidence!A"+targetRow+
+          "; "+record.theme+"; preview/headline unverified, zero weight; "+ftResearchQuestion_(record.theme)]]);
+        saved++;
+      } catch(e){failed++;console.log("Screen "+msgId+": "+String(e).slice(0,200));}
+    }
+    return {status:failed?"PARTIAL SCREEN":"SCREEN COMPLETE",scanned:scanned,
+      saved:saved,duplicates:duplicates,excluded:excluded,failed:failed,
+      pendingSeekingAlpha:Math.max(0,target.length-scanned)};
+  } finally {lock.releaseLock();}
+}
