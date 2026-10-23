@@ -188,6 +188,13 @@ test("unrelated mail is excluded; candidate priority is not a held-stock score",
   assert.equal(classify("ANET earnings","x@broker.test",u).priority,"P2");
   assert.equal(classify("Phillips 66 guidance","x@broker.test",u).priority,"P1");
   assert.equal(classify("Economic risks","x@ft.com",u).priority,"P3");
+  // The held NOW symbol must not be inferred from the everyday word 'now'.
+  const withNOW={held:Object.assign({},u.held,{NOW:true}),bench:u.bench,
+    aliases:u.aliases.concat([{ticker:"NOW",name:"servicenow"}])};
+  assert.equal(classify("New season streaming now","deals@primevideo.com",withNOW),null);
+  assert.equal(classify("Fall jackets on sale now","deals@marks.com",withNOW),null);
+  assert.equal(classify("ServiceNow Q3 earnings","alerts@investor.com",withNOW).priority,"P1");
+  assert.equal(classify("NYSE:NOW shares","alerts@wsj.com",withNOW).priority,"P1");
 });
 
 test("trigger installation is explicit and does not follow collection",()=>{
