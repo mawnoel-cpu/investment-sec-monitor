@@ -476,6 +476,33 @@ def write_verified(ws, address, rows):
         raise RuntimeError(f"{ws.title}!{address}: rotation write/readback mismatch")
 
 
+def proposal_note_updates(sheet_id, desk_rows, proposed):
+    """Attach each live proposal to its ticker, never to an assumed row order."""
+    by_ticker = {str(p[0]): (i, p) for i, p in enumerate(proposed, 1) if p[1] > 0}
+    requests = []
+    for sheet_row, cells in enumerate(desk_rows, 2):
+        decision = str(val(cells, 0)).strip()
+        ticker = decision.split(" ", 1)[0] if decision else ""
+        item = by_ticker.get(ticker)
+        if item is None:
+            if not re.match(r"^[A-Z][A-Z0-9.:/-]*\s+[—–-]\s+(?:EXITED|HOLD|TRIM|EXIT|ROTATE|BUY)\b", decision):
+                continue
+            # A disposed ticker must not retain another holding's live note.
+            note = "No current held-position proposal. See the dated decision text and confirmed Portfolio weights."
+            color = {"red":.96,"green":.97,"blue":.98}
+        else:
+            proposal_index, row = item
+            bad = row[10] == "FAILED" or row[3] == "UNRESOLVED"
+            color = {"red":.98,"green":.84,"blue":.84} if bad else {"red":.96,"green":.97,"blue":.98}
+            note = (f"PRICE MONITOR!A{2050+proposal_index}:Q{2050+proposal_index}. {row[5]}\n"
+                    f"Next order window {row[8]}; next executable open {row[9]}. "
+                    "Existing price/rotation plus available financial evidence; provisional model. No order placed.")
+        requests.append({"updateCells":{"range":{"sheetId":sheet_id,"startRowIndex":sheet_row-1,"endRowIndex":sheet_row,"startColumnIndex":1,"endColumnIndex":2},
+            "rows":[{"values":[{"note":note,"userEnteredFormat":{"backgroundColor":color}}]}],
+            "fields":"note,userEnteredFormat.backgroundColor"}})
+    return requests
+
+
 def main(now=None):
     injected_now = now is not None
     now = now or datetime.now(prices.TORONTO)
@@ -619,13 +646,7 @@ def main(now=None):
     # Attach a full reason and exact data location to the two-column display.
     # The price writer precedes this step; SYSTEM/B13 remains health-owned.
     desk = book.worksheet("TRADE DESK")
-    requests = []
-    for i, row in enumerate((p for p in proposed if p[1]>0), 1):
-        bad = row[10] == "FAILED" or row[3] == "UNRESOLVED"
-        color = {"red":.98,"green":.84,"blue":.84} if bad else {"red":.96,"green":.97,"blue":.98}
-        requests.append({"updateCells":{"range":{"sheetId":desk.id,"startRowIndex":i,"endRowIndex":i+1,"startColumnIndex":1,"endColumnIndex":2},
-            "rows":[{"values":[{"note":f"PRICE MONITOR!A{2050+i}:Q{2050+i}. {row[5]}\nNext order window {row[8]}; next executable open {row[9]}. Existing price/rotation plus available financial evidence; provisional model. No order placed.","userEnteredFormat":{"backgroundColor":color}}]}],
-            "fields":"note,userEnteredFormat.backgroundColor"}})
+    requests = proposal_note_updates(desk.id, desk.get("B2:B60"), proposed)
     if requests:
         book.batch_update({"requests":requests})
     write_verified(monitor,"U210:V215",[["FINANCING CALCULATION",financial_state],

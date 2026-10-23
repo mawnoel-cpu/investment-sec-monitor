@@ -15,6 +15,22 @@ def fixture(end=date(2026, 10, 15)):
 
 
 class SectorRotationTests(unittest.TestCase):
+    def test_proposal_notes_follow_ticker_after_exit_and_separated_holdings(self):
+        def proposal(ticker, reason):
+            row = [""] * 17
+            row[0], row[1], row[3], row[5], row[10] = ticker, .1, "HOLD", reason, "VERIFIED PRIOR CLOSE"
+            return row
+        rows = [["PSX — HOLD 5%"], ["MSFT — EXITED 0%"], ["CASH — 0%"], ["SYSTEM — CHECKED"], [], ["CME — HOLD 10%"]]
+        result = s.proposal_note_updates(42, rows, [proposal("PSX", "PSX evidence"), proposal("CME", "CME evidence")])
+        notes = {r["updateCells"]["range"]["startRowIndex"]: r["updateCells"]["rows"][0]["values"][0]["note"] for r in result}
+        self.assertEqual(set(notes), {1, 2, 6})
+        self.assertIn("A2051:Q2051", notes[1])
+        self.assertIn("PSX evidence", notes[1])
+        self.assertIn("No current held-position proposal", notes[2])
+        self.assertIn("A2052:Q2052", notes[6])
+        self.assertIn("CME evidence", notes[6])
+        self.assertNotIn("PSX evidence", notes[6])
+
     def test_calendar_gap_is_missing_not_shorter_return(self):
         h=fixture(); end=date(2026,10,15)
         del h["AMGN"][date(2026,10,12)]
