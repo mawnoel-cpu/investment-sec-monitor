@@ -183,6 +183,9 @@ function ftQueueClassify_(subject, from, universe) {
   for (var i=0; i<all.length; i++) {
     var symbol=all[i];
     var root=symbol.replace(/:LSE$/,"");
+    // NOW is an ordinary English word; matching it would label unrelated
+    // emails P1/P2 (shopping, streaming, and ticket notices).
+    if (root==="NOW" && !(/\bServiceNow\b/i.test(title) || /(?:\$NOW\b|\bNYSE:NOW\b)/i.test(title))) continue;
     if (root.length<3) continue;
     var rex=new RegExp("(^|[^A-Za-z0-9])"+root+"([^A-Za-z0-9]|$)","i");
     if (rex.test(title) && !seen[symbol]) {tickers.push(symbol);seen[symbol]=true;}
