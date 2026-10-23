@@ -306,7 +306,7 @@ def main(now=None):
     book = prices.auth_book()
     tracked = prices.tracking(book)
     archive = book.worksheet("DAILY CLOSES")
-    data = archive.get(f"A5:J{prices.DATA_LAST_ROW}", value_render_option="UNFORMATTED_VALUE")
+    data = archive.get(f"A5:J{archive.row_count}", value_render_option="UNFORMATTED_VALUE")
     faults = []
     for ticker, gs in tracked.items():
         rows = [(n, r) for n, r in enumerate(data, 5) if value(r, 1) == ticker and value(r, 8) == "VERIFIED"]
@@ -314,14 +314,14 @@ def main(now=None):
         sessions = {value(r, 0) for _, r in rows}
         latest = max(sessions, default=0)
         if latest != prices.serial(expected) or len(sessions) < 21:
-            loc = f"DAILY CLOSES!A{rows[-1][0]}:J{rows[-1][0]}" if rows else "DAILY CLOSES!A5:J12000"
+            loc = f"DAILY CLOSES!A{rows[-1][0]}:J{rows[-1][0]}" if rows else f"DAILY CLOSES!A5:J{archive.row_count}"
             faults.append(f"{loc}: {ticker} expected {expected}, latest serial {latest}, {len(sessions)} sessions")
-    logs = archive.get("L5:P200", value_render_option="UNFORMATTED_VALUE")
+    logs = archive.get(f"L5:P{archive.row_count}", value_render_option="UNFORMATTED_VALUE")
     latest = max((r for r in logs if r), key=lambda r: value(r, 0, 0), default=[])
     if value(latest, 2) != "Complete":
-        faults.append("DAILY CLOSES!L5:P200: latest price run not Complete")
+        faults.append(f"DAILY CLOSES!L5:P{archive.row_count}: latest price run not Complete")
     if now.time() >= time(14, 15) and value(latest, 0, 0) < int(prices.serial(now)) + (12*60+20)/1440:
-        faults.append("DAILY CLOSES!L5:P200: fresh post12:20 pretrade receipt missing")
+        faults.append(f"DAILY CLOSES!L5:P{archive.row_count}: fresh post12:20 pretrade receipt missing")
     price_state = "FAILED" if faults else "SAVED"
     portfolio = prices.portfolio_rows(book.worksheet("Portfolio"))
     analysis = book.worksheet("TRADE ANALYSIS").get("A4:M100",value_render_option="UNFORMATTED_VALUE")
@@ -334,9 +334,11 @@ def main(now=None):
         value(value(book.worksheet("Portfolio").get("F3",value_render_option="UNFORMATTED_VALUE"),0,[]),0))
     faults.extend(view_faults+performance_faults)
     monitor = book.worksheet("PRICE MONITOR")
+    rotation_runs = monitor.get("A1451:J2000", value_render_option="UNFORMATTED_VALUE")
+    if monitor.row_count >= 2601:
+        rotation_runs += monitor.get(f"A2601:J{monitor.row_count}", value_render_option="UNFORMATTED_VALUE")
     faults.extend(rotation_health(now, monitor.get("U195:V202", value_render_option="UNFORMATTED_VALUE"),
-        monitor.get("A2051:Q2070", value_render_option="UNFORMATTED_VALUE"), portfolio,
-        monitor.get("A1451:J2000", value_render_option="UNFORMATTED_VALUE")))
+        monitor.get("A2051:Q2070", value_render_option="UNFORMATTED_VALUE"), portfolio, rotation_runs))
     faults.extend(finance.health(now, monitor.get("U210:V215", value_render_option="UNFORMATTED_VALUE"),
         book.worksheet("Decision Cards").get("A41:AF60", value_render_option="UNFORMATTED_VALUE"),
         [(r[0],r[2],r[3]) for r in portfolio if len(r)>3 and isinstance(r[2],(int,float)) and r[2]>0]))
