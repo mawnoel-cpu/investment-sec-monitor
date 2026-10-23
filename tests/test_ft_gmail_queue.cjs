@@ -96,7 +96,8 @@ function environment(subjects,opts={}) {
     };}},
     GmailApp:{
       search(q,offset,count){counts.search.push({q,offset,count});return pages.slice(offset,offset+count);},
-      getMessagesForThreads(ts){return ts.map(t=>t.getMessages());}
+      getMessagesForThreads(ts){return ts.map(t=>t.getMessages());},
+      getMessageById(id){return pages.flatMap(t=>t.getMessages()).find(x=>x.getId()===id)||null;}
     },
     LockService:{getScriptLock(){return {tryLock(){return true;},releaseLock(){}};}},
     Utilities:{formatDate(){return "2026-10-15";}},
@@ -115,7 +116,8 @@ function message(subject,domain,i,when){
     getId(){return "msg"+i;},
     getDate(){return new Date(when);},
     getSubject(){return subject;},
-    getFrom(){return "Updates <newsletter@"+domain+">";}
+    getFrom(){return "Updates <newsletter@"+domain+">";},
+    getPlainBody(){return "[AI infrastructure financing faces new questions about capex and issuer obligations while company earnings diverge.](https://seekingalpha.example/article)";}
   };
 }
 test("collector stages only relevant metadata, not Gmail mutations",()=>{
@@ -200,3 +202,53 @@ test("email subjects cannot become executable spreadsheet formulas",()=>{
   assert.equal(rows[5][5],'Ordinary market update');
 });
 
+
+test("Seeking Alpha snippets become unverified zero-weight Evidence with idempotent queue status",()=>{
+  const e=environment(["AI infrastructure funding risk emerging"],{domains:["seekingalpha.com"]});
+  e.workbook.insertSheet("Evidence");
+  const one=e.context.ftGmailQueueCollect();
+  assert.equal(one.research.status,"SCREEN COMPLETE");
+  assert.equal(one.research.saved,1);
+  const q=e.sheets["FT GMAIL QUEUE"].grid[1];
+  assert.equal(q[6],"SCREENED");
+  assert.match(q[9],/zero weight/i);
+  const record=e.sheets["Evidence"].grid[7];
+  assert.equal(record[0],"GMAIL.SA.PREVIEW.msg0");
+  assert.equal(record[9],"Unverified");
+  assert.equal(record[6],0);
+  assert.match(record[10],/J8="Valid"/);
+  assert.equal(record[14],"msg0");
+  assert.equal(record[16],"Excerpt");
+  assert.equal(e.counts.gmailMutations,0);
+  const again=e.context.ftGmailQueueScreen();
+  assert.equal(again.saved,0);
+  assert.equal(e.sheets["Evidence"].getLastRow(),8);
+});
+
+test("a topic headline without article text is only a research lead",()=>{
+  const e=environment([]);
+  const c=e.context;
+  assert.equal(c.ftResearchTheme_("AI capex financing strain"),"AI_FINANCING_RISK");
+  assert.equal(c.ftResearchTheme_("Healthcare rotation"),"HEALTHCARE_ROTATION");
+  assert.equal(c.ftResearchTheme_("Oil price and energy"),"ENERGY_ROTATION");
+  const item=c.ftResearchEvidenceRow_(["msg1","","","","seekingalpha.com","Rocket Lab delay"],
+    "Rocket Lab delay","",new Date("2026-10-14"),new Date("2026-10-15"));
+  const row=c.ftQueueScreenEvidenceCells_(item,308);
+  assert.equal(row[16],"Headline only");
+  assert.equal(row[9],"Unverified");
+  assert.equal(row[6],0);
+  assert.equal(row[14],"msg1");
+});
+
+test("Seeking Alpha welcome promotions are excluded without Evidence, but a mixed retirement digest is not",()=>{
+  const e=environment(["You're in. Here's where to start.","How To Retire: Hope For 95, Prepare For 105"],
+    {domains:["seekingalpha.com","seekingalpha.com"]});
+  e.workbook.insertSheet("Evidence");
+  const outcome=e.context.ftGmailQueueCollect();
+  assert.equal(outcome.research.excluded,1);
+  assert.equal(outcome.research.saved,1);
+  assert.equal(e.sheets["Evidence"].getLastRow(),8);
+  const queue=e.sheets["FT GMAIL QUEUE"].grid.slice(1);
+  assert.equal(queue[0][6],"EXCLUDED");
+  assert.equal(queue[1][6],"SCREENED");
+});
