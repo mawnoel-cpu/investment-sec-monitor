@@ -14,7 +14,7 @@ var FT_GMAIL_QUEUE = Object.freeze({
   pagesPerRun: 3,
   overlapSeconds: 2 * 86400,
   initialDays: 14,
-  maxRows: 10000,
+  maxRows: 50000, // Safety ceiling; actual queue grid grows as needed.
   deadline: "2026-11-27",
   headers: ["MESSAGE ID", "RECEIVED UTC", "PRIORITY", "TICKERS", "SENDER DOMAIN",
     "SUBJECT", "STATUS", "ATTEMPTS", "UPDATED UTC", "DISPOSITION / ISSUE"]
@@ -79,8 +79,14 @@ function ftQueueCollect_() {
           throw new Error("FT GMAIL QUEUE capacity exceeded; checkpoint retained");
         // Native new tabs typically start at 1,000 rows. Grow deliberately
         // before writing; never assume getRange creates missing grid rows.
-        if (lastNeeded > sheet.getMaxRows())
-          sheet.insertRowsAfter(sheet.getMaxRows(), lastNeeded-sheet.getMaxRows());
+        if (lastNeeded > sheet.getMaxRows()) {
+          var oldMax=sheet.getMaxRows();
+          sheet.insertRowsAfter(oldMax, Math.max(200,lastNeeded-oldMax));
+          // Preserve native status choices across newly created queue rows.
+          var rule=sheet.getRange(Math.max(2,oldMax),7).getDataValidation();
+          if (rule) sheet.getRange(oldMax+1,7,sheet.getMaxRows()-oldMax,1)
+            .setDataValidation(rule);
+        }
         sheet.getRange(startRow,1,added.length,FT_GMAIL_QUEUE.headers.length)
           .setValues(added);
         SpreadsheetApp.flush();
@@ -368,8 +374,8 @@ function ftQueueScreenEvidenceCells_(item, n) {
     "=IFNA(VLOOKUP(M"+n+",Sources!$J$8:$M$200,4,FALSE),0)",
     0,14,"=IF(C"+n+"=\"\",\"\",TODAY()-INT(C"+n+"))",
     "Unverified",
-    "=IF(AND(J"+n+"=\"Valid\",ISNUMBER(C"+n+"),I"+n+">=0,I"+n+"<=H"+n+
-      ",OR(Q"+n+"=\"Full\",Q"+n+"=\"Excerpt\",Q"+n+"=\"Data\")),F"+n+",0)",
+    "=IF(AND(OR(J"+n+"=\"Valid\",J"+n+"=\"Qualified\"),ISNUMBER(C"+n+"),I"+n+">=0,I"+n+"<=H"+n+
+      ",OR(Q"+n+"=\"Full\",Q"+n+"=\"Excerpt\",Q"+n+"=\"Data\")),IFERROR(INDEX(\u0027SOURCE CALIBRATION\u0027!$K$5:$K$150,MATCH(M"+n+",\u0027SOURCE CALIBRATION\u0027!$A$5:$A$150,0)),F"+n+")*IF(J"+n+"=\"Qualified\",0.3,1),0)",
     "=K"+n+"*G"+n,
     "Seeking Alpha","Contributor digest / preview",item.msgId,item.captured,
     item.extraction,"GMAIL:SA:"+item.msgId,item.title,item.research
