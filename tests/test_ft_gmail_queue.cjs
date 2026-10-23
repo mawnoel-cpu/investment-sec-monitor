@@ -62,8 +62,14 @@ function environment(subjects,opts={}) {
               return [[new Date("2026-10-14T21:46:06Z")]];
           }
           const start=args[0], col=args[1], count=args[2]||1,width=args[3]||1;
-          return Array.from({length:count},(_,i)=>Array.from({length:width},(_,j)=>
-            s.grid[start+i-1]?.[col+j-1] ?? ""));
+          return Array.from({length:count},(_,i)=>Array.from({length:width},(_,j)=>{
+            const raw=s.grid[start+i-1]?.[col+j-1] ?? "";
+            // Google Sheets evaluates this existing Evidence quality gate. The
+            // local mock has no calculation engine, so model the Unverified=0 case.
+            if(s.name==="Evidence" && col+j===11 && typeof raw==="string" &&
+               raw.startsWith("=") && s.grid[start+i-1]?.[9]==="Unverified")return 0;
+            return raw;
+          }));
         },
         getValue(){return this.getValues()[0][0];},
         setFontWeight(){return this;},
