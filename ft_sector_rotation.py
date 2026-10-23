@@ -324,7 +324,13 @@ def rank_candidates(rows, hist, end, now, config=DEFAULTS, positions=None):
             gaps.append("momentum has not qualified")
         held = (any(p["ticker"] == t and (p["held"] > 0 or p["queued"] > 0) for p in positions)
                 if positions is not None else isnum(val(r, 34)) and r[34] > 0)
-        state = "HELD — no duplicate purchase" if held else "READY FOR HUMAN REVIEW" if not gaps else "RESERVE — " + "; ".join(gaps)
+        # Research gaps must be visible without turning unverified data into a buy.
+        # Provisional candidates remain excluded from automatic paired orders.
+        provisional = (not held and val(r, 18) == "YES" and str(val(r, 19)).startswith("https://") and m["score"] is not None)
+        state = ("HELD — no duplicate purchase" if held else
+                 "READY FOR HUMAN REVIEW" if not gaps else
+                 "PROVISIONAL RESEARCH — " + "; ".join(gaps) if provisional else
+                 "RESERVE — " + "; ".join(gaps))
         # Price score ranks the entire universe independently of topic or email.
         result.append({"row": n, "ticker": t, "sector": sector, "m": m, "state": state,
                        "eligible": val(r, 18), "event": val(r, 6), "reviewed": reviewed,
@@ -542,13 +548,14 @@ def main(now=None):
         desk_views.sync_views(book, portfolio)
     except Exception as exc:
         view_faults.append(f"TRADE ANALYSIS / PRICE GATES: view sync failed: {type(exc).__name__}: {str(exc)[:300]}")
-    raw = book.worksheet("DAILY CLOSES").get(f"A5:J{prices.DATA_LAST_ROW}", value_render_option="UNFORMATTED_VALUE")
+    archive = book.worksheet("DAILY CLOSES")
+    raw = archive.get(f"A5:J{archive.row_count}", value_render_option="UNFORMATTED_VALUE")
     hist, locations, faults = load_archive(raw)
     faults.extend(view_faults)
     end = prices.last_completed(now, *prices.venue_info("SPY", "")[2:])
     groups = group_metrics(hist, end)
     missing = [t for t, m in groups.items() if m["score"] is None]
-    faults.extend(f"DAILY CLOSES!A5:J{prices.DATA_LAST_ROW}: {t} incomplete matched sessions through {end}" for t in missing)
+    faults.extend(f"DAILY CLOSES!A5:J{archive.row_count}: {t} incomplete matched sessions through {end}" for t in missing)
     faults.extend(f"PRICE MONITOR!N175:Q185: {t} breadth sample incomplete ({m['breadth']['coverage']})" for t,m in groups.items() if t in SECTORS and not m['breadth']['coverage'].startswith('3/3'))
     alerts = detect_warnings(groups, config)
     digest = hashlib.sha256(json.dumps(raw, separators=(",", ":")).encode()).hexdigest()[:20]
@@ -571,7 +578,7 @@ def main(now=None):
     if valuation_headers and any(valuation_headers[0]) and valuation_headers[0] != VALUATION_HEADERS:
         raise RuntimeError("CANDIDATE POOL!BD4:BG4: unexpected valuation schema")
     write_verified(pool, "BD4:BG4", [VALUATION_HEADERS])
-    candidates = pool.get("A5:BG104", value_render_option="UNFORMATTED_VALUE")
+    candidates = pool.get(f"A5:BG{pool.row_count}", value_render_option="UNFORMATTED_VALUE")
     ranked = rank_candidates(candidates, hist, end, now, config, positions=positions)
     existing = pool.get("AR4:BC4")
     if existing and any(existing[0]) and existing[0] != CANDIDATE_HEADERS:
@@ -596,11 +603,14 @@ def main(now=None):
         raise RuntimeError("ROTATION BENCH!A140:P140: unexpected existing schema")
     write_verified(bench, "A140:P140", [BENCH_HEADERS])
     benchrows = [[c["rank"], c["ticker"], c["sector"], *[c["m"][f"r{n}"] for n in (3, 5, 10, 20)], c["m"]["rs5"], c["m"]["score"], c["state"], c["eligible"], c["event"], c["reviewed"], c["gaps"], c["cash_rank"], prices.serial(now)] for c in ranked]
-    if len(benchrows) > 100:
-        raise RuntimeError("ROTATION BENCH!A141:P240: cross-sector ranking capacity")
+    if len(benchrows) > 150:
+        raise RuntimeError("ROTATION BENCH!A141:P290: research universe exceeds reserved 150 rows; do not overwrite summary")
     if benchrows:
         write_verified(bench, f"A141:P{140+len(benchrows)}", benchrows)
-    write_verified(bench, "A243:P243", [["CASH", "0% game price return", "Rank above any unqualified purchase", "", "", "", "", "", "", "READY (subject to 25% cash cap)", "N/A", "No issuer/opening-gap risk", "", "Current held and queued cash are different", "No automatic buy after sector rally", prices.serial(now)]])
+    # Legacy CASH row 243 would otherwise block candidates 103 onward.
+    if len(benchrows) <= 102:
+        bench.batch_clear(["A243:P243"])
+    write_verified(bench, "A299:P299", [["CASH", "0% game price return", "Rank above any unqualified purchase", "", "", "", "", "", "", "READY (subject to 25% cash cap)", "N/A", "No issuer/opening-gap risk", "", "Current held and queued cash are different", "No automatic buy after sector rally", prices.serial(now)]])
     # Optional financial evidence extends the existing decision run. A failed
     # addon cannot disable verified RULE-015/020 proposals.
     financial_state, financial_faults, assessments = "FAILED", [], {}
