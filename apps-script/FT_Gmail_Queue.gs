@@ -150,9 +150,10 @@ function ftQueueExisting_(sheet) {
 
 function ftQueueUniverse_(book) {
   var held=Object.create(null), bench=Object.create(null), aliases=[];
-  var portfolio=book.getSheetByName("Portfolio").getRange("A8:D19").getValues();
+  var portfolio=book.getSheetByName("Portfolio").getRange("A8:D100").getValues();
   for (var i=0; i<portfolio.length; i++) {
     var ticker=String(portfolio[i][0]||"").trim();
+    if (ticker==="TOTAL") break;
     if (!ticker) continue;
     var current=Number(portfolio[i][2])||0;
     var queued=Number(portfolio[i][3])||0;
