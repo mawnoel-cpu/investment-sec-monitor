@@ -285,24 +285,24 @@ function ftGmailQueueScreen() {
 }
 
 function ftResearchIsPromotion_(subject) {
-  return /(?:\\bwelcome\\b|here's where to start|you're in\\.|one step away|\\bwebinar\\b|\\bsubscribe\\b|\\bfree access\\b|\\bjoin now\\b|\\bquiz\\b|your favorite|members got|\\bdiscount\\b|\\bspecial offer\\b)/i.test(String(subject||""));
+  return /(?:\bwelcome\b|here's where to start|you're in\.|one step away|\bwebinar\b|\bsubscribe\b|\bfree access\b|\bjoin now\b|\bquiz\b|your favorite|members got|\bdiscount\b|\bspecial offer\b)/i.test(String(subject||""));
 }
 
 function ftResearchTheme_(text) {
   text=String(text||"").toLowerCase();
-  if (/\\bhealthcare\\b|\\bbiotech\\b|\\bpharma\\b|\\binsurer\\b/.test(text))
+  if (/\bhealthcare\b|\bbiotech\b|\bpharma\b|\binsurer\b/.test(text))
     return "HEALTHCARE_ROTATION";
-  if (/\\bcredit\\b|\\bfinanc\\w*|capex|\\bcash crunch\\b|\\bai bubble\\b/.test(text))
+  if (/\bcredit\b|\bfinanc\w*|capex|\bcash crunch\b|\bai bubble\b/.test(text))
     return "AI_FINANCING_RISK";
-  if (/\\bsemiconductor\\b|\\bmicron\\b|\\bhynix\\b|memory price|\\bchip\\b/.test(text))
+  if (/\bsemiconductor\b|\bmicron\b|\bhynix\b|memory price|\bchip\b/.test(text))
     return "SEMICONDUCTOR_CYCLE";
-  if (/\\bbreadth\\b|under the hood|\\bconcentration\\b|\\bmarket leadership\\b|\\bbear market\\b/.test(text))
+  if (/\bbreadth\b|under the hood|\bconcentration\b|\bmarket leadership\b|\bbear market\b/.test(text))
     return "MARKET_BREADTH";
-  if (/\\boil\\b|\\benergy\\b|\\bnatural gas\\b|\\br[ea]fin/.test(text))
+  if (/\boil\b|\benergy\b|\bnatural gas\b|\br[ea]fin/.test(text))
     return "ENERGY_ROTATION";
-  if (/\\brocket lab\\b|\\bneutron\\b|\\brklb\\b/.test(text))
+  if (/\brocket lab\b|\bneutron\b|\brklb\b/.test(text))
     return "SPACE_VALUATION";
-  if (/\\bearnings\\b|\\bupgrade\\b|\\bvaluation\\b/.test(text))
+  if (/\bearnings\b|\bupgrade\b|\bvaluation\b/.test(text))
     return "COMPANY_RESEARCH";
   return "MACRO_RESEARCH";
 }
@@ -322,16 +322,16 @@ function ftResearchQuestion_(theme) {
 }
 
 function ftResearchDigestPreview_(plain, subject) {
-  var lines=String(plain||"").slice(0,FT_SA_SCREEN.maxMessageChars).split(/\\r?\\n/);
+  var lines=String(plain||"").slice(0,FT_SA_SCREEN.maxMessageChars).split(/\r?\n/);
   var chosen=[], seen={};
   for(var i=0;i<lines.length&&chosen.length<4;i++){
     var line=String(lines[i]||"").trim();
     // On Must Reads, full article text is NOT embedded. Extract only
     // visible teaser sentences; never claim to have read linked articles.
-    var md=line.match(/^\\[([^\\]]{35,})\\]\\(/);
+    var md=line.match(/^\[([^\]]{35,})\]\(/);
     if(md) line=md[1].trim();
     if(!line||line.length<50||line.length>650||
-      /https?:|unsubscribe|premium|special offer|sent by seeking alpha|sponsored|scan to download|your email|\\bjoin now\\b|\\btrading with\\b/i.test(line))
+      /https?:|unsubscribe|premium|special offer|sent by seeking alpha|sponsored|scan to download|your email|\bjoin now\b|\btrading with\b/i.test(line))
       continue;
     if(line.toLowerCase()===String(subject||"").toLowerCase()||seen[line])continue;
     seen[line]=1;chosen.push(line);
