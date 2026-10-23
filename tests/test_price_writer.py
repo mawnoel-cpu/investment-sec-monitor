@@ -164,5 +164,36 @@ class DailyPriceTests(unittest.TestCase):
         self.assertIn("currency",why)
 
 
+    def test_candidate_scan_uses_live_grid_not_old_row_104(self):
+        book=Mock()
+        sheets={n:Mock() for n in ["PRICE GATES","PRICE MONITOR","Portfolio","CANDIDATE POOL"]}
+        book.worksheet.side_effect=lambda n:sheets[n]
+        sheets["PRICE GATES"].get.return_value=[["PSX"]]
+        sheets["PRICE MONITOR"].get.return_value=[]
+        sheets["CANDIDATE POOL"].row_count=150
+        sheets["CANDIDATE POOL"].get.return_value=[["PGR","Insurance","Scout","NYSE:PGR"]]
+        sheets["Portfolio"].get.return_value=[["PSX","Phillips",.05,.05],["TOTAL","",.05,.05]]
+        self.assertIn("PGR",p.tracking(book))
+        sheets["CANDIDATE POOL"].get.assert_called_once_with("A5:D150")
+
+    def test_price_run_log_grows_past_200_without_overwrite(self):
+        ws=Mock()
+        ws.id=77
+        ws.row_count=200
+        ws.get.return_value=[[float(n)] for n in range(196)]
+        row=p.save_log(ws,datetime(2026,10,23,tzinfo=p.TORONTO),"close","Partial",3,["test"])
+        self.assertEqual(row,201)
+        ws.add_rows.assert_called_once()
+        self.assertEqual(ws.update.call_args.kwargs["range_name"],"L201:P201")
+
+    def test_existing_archive_read_uses_actual_grid(self):
+        ws=Mock()
+        ws.row_count=14000
+        ws.get.return_value=[]
+        p.existing_keys(ws)
+        ws.get.assert_called_once_with("A5:J14000",value_render_option="UNFORMATTED_VALUE")
+
+
+
 if __name__=="__main__":
     unittest.main()
