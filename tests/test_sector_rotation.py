@@ -173,7 +173,7 @@ class SectorRotationTests(unittest.TestCase):
     def test_partial_primary_research_is_provisional_not_auto_buy(self):
         now=datetime(2026,10,16,tzinfo=prices.TORONTO)
         row=[""]*59
-        row[0]="PGR";row[3]="NYSE:PGR";row[18]="YES"
+        row[0]="AMGN";row[3]="NASDAQ:AMGN";row[18]="YES"
         row[19]="https://www.sec.gov/issuer";row[16]="Verified"
         row[17]=prices.serial(now)
         # Missing valuation/catalyst/edge remains a caveat, not an invisible pick.
