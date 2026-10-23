@@ -1,5 +1,5 @@
 /**
- * FT GAME — metadata-only, resumable Gmail discovery.
+ * FT GAME — resumable Gmail discovery plus unverified digest screening.
  *
  * STAGED MODULE. Do NOT enable ftGmailQueueInstallTrigger until the existing
  * container-bound script is inspected, synced and authorized by its owner.
