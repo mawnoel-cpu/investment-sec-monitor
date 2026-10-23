@@ -53,7 +53,7 @@ function environment(subjects,opts={}) {
         getValues(){
           if(typeof args[0]==="string") {
             const ref=args[0];
-            if(s.name==="Portfolio" && ref==="A8:D19") return defaults.Portfolio;
+            if(s.name==="Portfolio" && ref==="A8:D100") return defaults.Portfolio;
             if(s.name==="CANDIDATE POOL" && ref==="A5:A104")
               return [["NVDA"],["ANET"],["ETN"]];
             if(s.name==="CANDIDATE POOL" && ref==="AJ5:AK104")
