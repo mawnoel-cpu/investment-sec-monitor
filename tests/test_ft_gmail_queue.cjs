@@ -61,7 +61,7 @@ function environment(subjects,opts={}) {
             if(s.name==="Sources" && ref==="B42")
               return [[new Date("2026-10-14T21:46:06Z")]];
           }
-          const start=args[0], col=args[1], count=args[2],width=args[3];
+          const start=args[0], col=args[1], count=args[2]||1,width=args[3]||1;
           return Array.from({length:count},(_,i)=>Array.from({length:width},(_,j)=>
             s.grid[start+i-1]?.[col+j-1] ?? ""));
         },
