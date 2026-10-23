@@ -83,7 +83,9 @@ function ftQueueCollect_() {
           var oldMax=sheet.getMaxRows();
           sheet.insertRowsAfter(oldMax, Math.max(200,lastNeeded-oldMax));
           // Preserve native status choices across newly created queue rows.
-          var rule=sheet.getRange(Math.max(2,oldMax),7).getDataValidation();
+          var previousStatus=sheet.getRange(Math.max(2,oldMax),7);
+          var rule=typeof previousStatus.getDataValidation === "function"
+            ? previousStatus.getDataValidation() : null;
           if (rule) sheet.getRange(oldMax+1,7,sheet.getMaxRows()-oldMax,1)
             .setDataValidation(rule);
         }
