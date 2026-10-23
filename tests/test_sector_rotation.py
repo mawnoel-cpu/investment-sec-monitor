@@ -170,4 +170,17 @@ class SectorRotationTests(unittest.TestCase):
         self.assertEqual(health.rotation_health(now,receipt,[],[],[[stamp,"LIVE","COMPLETE"]]),[])
 
 
+    def test_partial_primary_research_is_provisional_not_auto_buy(self):
+        now=datetime(2026,10,16,tzinfo=prices.TORONTO)
+        row=[""]*59
+        row[0]="PGR";row[3]="NYSE:PGR";row[18]="YES"
+        row[19]="https://www.sec.gov/issuer";row[16]="Verified"
+        row[17]=prices.serial(now)
+        # Missing valuation/catalyst/edge remains a caveat, not an invisible pick.
+        out=s.rank_candidates([row],fixture(),date(2026,10,15),now)
+        self.assertTrue(out[0]["state"].startswith("PROVISIONAL RESEARCH"))
+        self.assertIn("valuation review missing",out[0]["gaps"])
+        self.assertIn("CASH ranks ahead",out[0]["cash_rank"])
+
+
 if __name__=="__main__":unittest.main()
