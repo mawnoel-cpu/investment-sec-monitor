@@ -675,7 +675,19 @@ def main(now=None):
     runs = monitor.get("A1451:J2000", value_render_option="UNFORMATTED_VALUE")
     dest = 1451 + len(runs)
     if dest > 2000:
-        raise RuntimeError("PRICE MONITOR!A1451:J2000: rotation run log full")
+        # Existing proposal block A2051:Q2070 must never be displaced.
+        # Continuation remains in this same PRICE MONITOR sheet and preserves history.
+        if monitor.row_count < 2700:
+            monitor.resize(rows=2700)
+        existing = monitor.get(f"A2601:J{monitor.row_count}", value_render_option="UNFORMATTED_VALUE")
+        dest = 2601 + len(existing)
+        if dest > monitor.row_count:
+            monitor.resize(rows=dest + 500)
+        header = monitor.get("A2600:J2600")
+        if header and any(header[0]) and header[0] != RUN_HEADERS:
+            raise RuntimeError("PRICE MONITOR!A2600:J2600: unexpected continuation schema")
+        if not header or not any(header[0]):
+            write_verified(monitor, "A2600:J2600", [RUN_HEADERS])
     write_verified(monitor, f"A{dest}:J{dest}", [[prices.serial(complete), "LIVE", state, prices.serial(end), 11-sum(t in SECTORS for t in missing), len(INDUSTRIES)-sum(t in INDUSTRIES for t in missing), len(alerts), " | ".join(faults)[:45000], os.getenv("GITHUB_RUN_ID", "local"), os.getenv("GITHUB_SHA", "local")]])
     print(json.dumps({"status": state, "session": str(end), "sectors": 11-sum(t in SECTORS for t in missing), "warnings": len(alerts), "holdings": len(proposed), "candidates": len(ranked), "readback": "verified", "orders": "unchanged", "faults": faults}))
     if faults:
