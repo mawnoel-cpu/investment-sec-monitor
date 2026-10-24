@@ -134,4 +134,49 @@ def sync_views(book, portfolio):
     analysis, gates = book.worksheet("TRADE ANALYSIS"), book.worksheet("PRICE GATES")
     rows = analysis.get("A4:M100", value_render_option="UNFORMATTED_VALUE")
     book.batch_update({"requests": view_requests(analysis.id,gates.id,rows,portfolio)})
+    import ft_stress_panel
+    # Re-read after any decision-row insertions; scenario coordinates may move.
+    book.batch_update({"requests": ft_stress_panel.requests(analysis.id,
+        analysis.get(f"A1:M{analysis.row_count}", value_render_option="UNFORMATTED_VALUE"))})
+    book.batch_update({"requests": status_requests(book.worksheet("TODAY").id,
+                                                  book.worksheet("BACKEND HEALTH").id)})
+
+
+def status_requests(today_id, health_id):
+    """Use the same baseline bench and explicit completion contract as Python."""
+    day='WORKDAY(TODAY()+1,-1,{DATE(2026,11,26)})'
+    review=f'''=IFERROR(LET(day,{day},k,"Daily:"&TEXT(day,"yyyy-mm-dd"),
+qty,COUNTIF(Reviews!$J$8:$J$1001,k),at,XLOOKUP(k,Reviews!$J$8:$J$1001,Reviews!$A$8:$A$1001,0),
+done,XLOOKUP(k,Reviews!$J$8:$J$1001,Reviews!$N$8:$N$1001,0),
+d,XLOOKUP(k,Reviews!$J$8:$J$1001,Reviews!$F$8:$F$1001,""),
+meta,XLOOKUP(k,Reviews!$J$8:$J$1001,Reviews!$M$8:$M$1001,""),
+cutoff,XLOOKUP(k,Reviews!$J$8:$J$1001,Reviews!$L$8:$L$1001,0),
+last,MATCH("TOTAL",Portfolio!$A:$A,0)-1,
+held,FILTER(Portfolio!$A$8:INDEX(Portfolio!$A:$A,last),Portfolio!$C$8:INDEX(Portfolio!$C:$C,last)>0),
+baseline,FILTER('ROTATION BENCH'!$C$5:$C$15,'ROTATION BENCH'!$C$5:$C$15<>""),
+picked,IFERROR(TRANSPOSE(SPLIT(REGEXREPLACE(REGEXEXTRACT(meta,"""candidates""\\s*:\\s*\\[([^\\]]*)\\]"),"""|\\s",""),",")),""),
+allnames,UNIQUE({{held;baseline;picked}}),ts,FILTER(allnames,allnames<>""),
+good,SUM(ARRAYFORMULA(--(COUNTIFS('Decision History'!$B$5:$B$1000,k,'Decision History'!$C$5:$C$1000,ts,
+'Decision History'!$A$5:$A$1000,">="&day,'Decision History'!$A$5:$A$1000,"<"&day+1,
+'Decision History'!$K$5:$K$1000,"<>",'Decision History'!$L$5:$L$1000,">0",'Decision History'!$M$5:$M$1000,"<>",
+'Decision History'!$O$5:$O$1000,">0",'Decision History'!$P$5:$P$1000,"<>",'Decision History'!$S$5:$S$1000,"<>")=1))),
+IF(TODAY()>DATE(2026,11,27),"GAME ENDED",IF(qty<>1,IF(NOW()<day+TIME(14,45,0),"DUE 14:45","MISSING / DUPLICATE REVIEW"),
+IF(OR(NOT(ISNUMBER(done)),done<at,INT(at)<>day,INT(done)<>day,done>NOW(),REGEXMATCH(d,"(?i)^(STARTED|PENDING|FAILED|INCOMPLETE|BLOCKED)")),"INCOMPLETE REVIEW",
+IF(good<>ROWS(ts),"INCOMPLETE SNAPSHOTS "&good&"/"&ROWS(ts)&" · "&TEXT(day,"dd mmm"),
+IF(MAX(Evidence!$P$8:$P)>cutoff,"NEW INPUTS — recheck","SAVED "&TEXT(done,"dd mmm HH:mm")&" · "&good&"/"&ROWS(ts)&" required · research partial")))))),"CHECK ERROR")'''.replace('\n','')
+    intake=f'''=IFERROR(LET(day,{day},at,MAX(Sources!$A$46:$A$1000),st,XLOOKUP(at,Sources!$A$46:$A$1000,Sources!$B$46:$B$1000,""),
+done,XLOOKUP(at,Sources!$A$46:$A$1000,Sources!$I$46:$I$1000,0),
+scheduled,IFERROR(ROWS(FILTER(Sources!$A$46:$A$1000,ISNUMBER(Sources!$A$46:$A$1000),Sources!$A$46:$A$1000>=day+TIME(10,30,0),Sources!$A$46:$A$1000<day+1,
+ISNUMBER(Sources!$I$46:$I$1000),Sources!$I$46:$I$1000>=Sources!$A$46:$A$1000,Sources!$I$46:$I$1000<=NOW(),
+REGEXMATCH(Sources!$B$46:$B$1000,"^(Complete|Partial)$"),
+NOT(REGEXMATCH(LOWER(Sources!$H$46:$H$1000),"audit:|manual|supplemental|additional|recovery")),
+IF(day>=DATE(2026,10,26),REGEXMATCH(LOWER(Sources!$H$46:$H$1000),"scheduledintake:"&TEXT(day,"yyyy-mm-dd")),Sources!$A$46:$A$1000>0))),0),
+IF(TODAY()>DATE(2026,11,27),"GAME ENDED",IF(scheduled=0,IF(NOW()<day+TIME(13,40,0),"IN PROGRESS / DUE13:40","MISSING SCHEDULED INTAKE · latest saved "&TEXT(done,"dd mmm HH:mm")),
+IF(OR(NOT(ISNUMBER(done)),done<at,done>NOW()),"UNFINALIZED", "SAVED "&UPPER(st)&" · "&TEXT(done,"dd mmm HH:mm"))))),"CHECK ERROR")'''.replace('\n','')
+    return [cell_request(today_id,27,2,review),cell_request(today_id,28,2,intake),
+        cell_request(today_id,25,2,'=SUMPRODUCT(--(\'TRADE ANALYSIS\'!C4:INDEX(\'TRADE ANALYSIS\'!C:C,MATCH("TOTAL SELL",\'TRADE ANALYSIS\'!A:A,0)-1)<>\'TRADE ANALYSIS\'!D4:INDEX(\'TRADE ANALYSIS\'!D:D,MATCH("TOTAL SELL",\'TRADE ANALYSIS\'!A:A,0)-1)))'),
+        cell_request(health_id,32,2,f'=IFERROR(LET(z,MAX(\'DAILY CLOSES\'!$L$5:$L),s,XLOOKUP(z,\'DAILY CLOSES\'!$L$5:$L,\'DAILY CLOSES\'!$N$5:$N),IF(AND(z>={day},z<=NOW(),s="Complete"),"OK","ISSUE")),"ISSUE")'),
+        cell_request(health_id,34,2,f'=IF(REGEXMATCH(TODAY!B28,"^SAVED PARTIAL"),"LIMITED",IF(REGEXMATCH(TODAY!B28,"^SAVED COMPLETE"),"OK",IF(NOW()<{day}+TIME(13,40,0),"PENDING","ISSUE")))'),
+        cell_request(health_id,35,2,f'=IF(REGEXMATCH(TODAY!B27,"^SAVED"),"OK",IF(NOW()<{day}+TIME(14,45,0),"PENDING","ISSUE"))'),
+        cell_request(health_id,36,2,'=IF(OR(B32="ISSUE",B34="ISSUE",B35="ISSUE",B41="FAILED",REGEXMATCH(B33,"FAILED|NOT AUDITED"),REGEXMATCH(B37,"MISSED")),"ISSUE",IF(B41="PARTIAL","LIMITED","OK"))')]
 

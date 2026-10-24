@@ -637,13 +637,12 @@ def main(now=None):
         # Only an explicitly labelled suffix is calculation-owned. Keep human
         # recommendation prose and all target/formula columns intact.
         analysis=book.worksheet("TRADE ANALYSIS")
-        for n,row in enumerate(analysis.get("A4:F100", value_render_option="UNFORMATTED_VALUE"),4):
-            t=val(row,0)
-            if t in assessments:
-                old=str(val(row,5)).split("\nFINANCIAL STRESS [")[0]
-                a=assessments[t]
-                text=old+f"\nFINANCIAL STRESS [{now.date()}]: "+finance.summary(a)+" | "+a["options"]+" | "+a["scope"]+" | Reversal: "+a["reversal"]
-                write_verified(analysis,f"F{n}:F{n}",[[text]])
+        # Tickers also occur in the numeric stress matrix below TOTAL SELL.
+        # Only the decision table's reason column belongs to this writer.
+        for n, text in finance.reason_updates(
+                analysis.get("A4:F100", value_render_option="UNFORMATTED_VALUE"),
+                assessments, now):
+            write_verified(analysis,f"F{n}:F{n}",[[text]])
         financial_state="VERIFIED"
     except Exception as exc:
         proposed=base_proposed

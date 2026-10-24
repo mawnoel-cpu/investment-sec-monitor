@@ -9,6 +9,8 @@ on:
       - "tests/test_price_writer.py"
       - "ft_pipeline_health.py"
       - "ft_trade_desk.py"
+      - "ft_stress_panel.py"
+      - "tests/test_stress_panel.py"
       - "tests/test_trade_desk_views.py"
       - "tests/test_pipeline_health.py"
       - "ft_rotation_universe.py"

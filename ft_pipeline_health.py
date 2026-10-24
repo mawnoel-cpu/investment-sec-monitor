@@ -11,16 +11,64 @@ import re
 
 import ft_price_writer as prices
 import ft_financial_stress as finance
+import ft_stress_panel as stress
 
 
 def value(row, i, default=""):
     return row[i] if len(row) > i else default
 
 
+def decision_clock(now):
+    """Weekend/holiday diagnostics audit the last required business-day window."""
+    day = now.date()
+    while day.weekday() >= 5 or day in prices.US_HOLIDAYS:
+        day -= timedelta(days=1)
+    return now if day == now.date() else datetime.combine(day, time(23,59,59), tzinfo=prices.TORONTO)
+
+
+def review_completion(row):
+    # N is the explicit read-back completion. Legacy rows use C (as-of), never
+    # A (start). If a modern row has a missing N, it must not use a fallback.
+    return value(row,13) if len(row)>10 else value(row,2)
+
+
+def scheduled_intake(row):
+    stamp=value(row,0)
+    if not stress.numeric(stamp):
+        return False
+    note=str(value(row,7)).lower()
+    if any(word in note for word in ("audit:","manual", "supplemental", "additional", "recovery")):
+        return False
+    # A manual early audit does not replace the 10:45 scheduled owner run.
+    if stamp-int(stamp) < (10*60+30)/1440:
+        return False
+    if int(stamp) >= int(prices.serial(prices.date(2026,10,26))):
+        return ("scheduledintake:" + prices.day_of(stamp).isoformat()) in note
+    return True
+
+
+def required_symbols(portfolio, bench, reviews, now):
+    required={r[0] for r in portfolio if stress.numeric(value(r,2)) and r[2]>0}
+    required.update(r[0] for r in bench if r and r[0])
+    # Research candidates named by the review are required in addition to the
+    # baseline active-bench set, not an alternative smaller denominator.
+    key="Daily:"+now.date().isoformat()
+    for row in reviews:
+        if value(row,9)==key and value(row,12):
+            try:
+                required.update(json.loads(row[12]).get("candidates",[]))
+            except (ValueError,TypeError,AttributeError):
+                pass
+    return required
+
+
 def evaluate(now, intake, reviews, snapshots, required, verified):
     day = int(prices.serial(now))
     faults = []
-    latest = max(enumerate(intake, 46), key=lambda x: value(x[1], 0, 0) or 0, default=(46, []))
+    # A weekend recovery must not be mistaken for Friday's scheduled receipt.
+    observed=[(n,r) for n,r in enumerate(intake,46)
+              if stress.numeric(value(r,0)) and value(r,0)<=prices.serial(now)]
+    latest = max(observed, key=lambda x: value(x[1], 0, 0), default=(46, []))
     n, row = latest
     if not row or value(row, 0, 0) < day:
         research = "PENDING" if now.time() < time(13, 40) else "MISSING"
@@ -49,16 +97,17 @@ def evaluate(now, intake, reviews, snapshots, required, verified):
     if len(matches) == 1:
         n, row = matches[0]
         location = f"Reviews!A{n}:J{n} / Decision History!A5:S1000"
-        stamp, asof = value(row, 0, 0), value(row, 2, 0)
+        stamp, asof = value(row, 0, 0), review_completion(row)
         decision = str(value(row, 5))
-        dates_ok = isinstance(stamp, (int, float)) and isinstance(asof, (int, float)) and day <= stamp <= prices.serial(now) and day <= asof <= prices.serial(now)
+        dates_ok = stress.numeric(stamp) and stress.numeric(asof) and day <= stamp <= asof <= prices.serial(now)
         complete = dates_ok and bool(decision) and not re.match(r"(?i)^(started|pending|failed|incomplete|blocked|in progress)", decision) and not missing and not invalid
         # A morning-only review cannot pass the afternoon decision check,
         # even when new evidence arrived after the trading cutoff.
         if complete and now.time() >= time(14, 45) and stamp < day + (14 * 60 + 20) / 1440:
             review_state = "PREWINDOW REFRESH MISSING"
             complete = False
-        elif complete and isinstance(verified, (int, float)) and asof < verified:
+        elif complete and isinstance(verified, (int, float)) and (
+                value(row,11,asof) if stress.numeric(value(row,11,asof)) else 0) < verified:
             cutoff = day + (15 * 60 + 15) / 1440
             if now.time() >= time(15, 15) and verified >= cutoff:
                 # Later research must be assessed at the next eligible trade
@@ -79,7 +128,7 @@ def evaluate(now, intake, reviews, snapshots, required, verified):
     return research, review_state, faults
 
 
-def delivery_status(now, price_logs, intake, reviews):
+def delivery_status(now, price_logs, intake, reviews, review_ok=None):
     """Persist whether each decision-window write met its own deadline.
 
     A later successful write clears the live fault, but cannot turn a missed
@@ -96,7 +145,7 @@ def delivery_status(now, price_logs, intake, reviews):
     research_deadline = day + (13 * 60 + 40) / 1440
     finalized_research = [
         (n, r) for n, r in research_rows
-        if value(r, 1) in {"Complete", "Partial"}
+        if scheduled_intake(r) and value(r, 1) in {"Complete", "Partial"}
         and not str(value(r, 7)).lower().startswith("started")
         and isinstance(value(r, 8), (int, float))
         and value(r, 0) <= value(r, 8)
@@ -110,7 +159,7 @@ def delivery_status(now, price_logs, intake, reviews):
             shown = (prices.EPOCH + timedelta(days=float(stamp))).strftime("%H:%M")
             missed.append(f"research Sources!I{n}={shown} >13:40")
         else:
-            missed.append("research Sources!I46:I1000 missing by13:40")
+            missed.append("scheduled research Sources!I46:I1000 missing by13:40; early/manual audits are not scheduled delivery")
 
     price_deadline = day + (14 * 60 + 15) / 1440
     price_start = day + (12 * 60 + 20) / 1440
@@ -134,13 +183,16 @@ def delivery_status(now, price_logs, intake, reviews):
     review_rows = [(n, r) for n, r in enumerate(reviews, 8) if value(r, 9) == key]
     review_start = day + (14 * 60 + 20) / 1440
     review_deadline = day + (14 * 60 + 45) / 1440
-    review_on_time = len(review_rows) == 1 and isinstance(value(review_rows[0][1], 0), (int, float)) \
-        and review_start <= value(review_rows[0][1], 0) <= review_deadline
+    review_on_time = len(review_rows) == 1 and stress.numeric(review_completion(review_rows[0][1])) \
+        and review_start <= value(review_rows[0][1],0) <= review_completion(review_rows[0][1]) <= review_deadline \
+        and review_ok is not False
     if now.time() >= time(14, 45) and not review_on_time:
         if review_rows and isinstance(value(review_rows[0][1], 0), (int, float)):
             n, row = review_rows[0]
-            stamp = (prices.EPOCH + timedelta(days=float(value(row, 0)))).strftime("%H:%M")
-            missed.append(f"review Reviews!A{n}={stamp} outside14:20-14:45")
+            done=review_completion(row)
+            stamp=(prices.EPOCH+timedelta(days=float(done))).strftime("%H:%M") if stress.numeric(done) else "MISSING"
+            column="N" if len(row)>10 else "C"
+            missed.append(f"review Reviews!{column}{n}={stamp}; completion/required coverage not verified within14:20-14:45")
         else:
             missed.append("review Reviews!A8:J1001 missing/duplicate by14:45")
 
@@ -300,9 +352,11 @@ def performance_status(now, rows, displayed_value, portfolio_equity):
 def main(now=None):
     injected_now = now is not None
     now = now or datetime.now(prices.TORONTO)
-    if now.date() > prices.date(2026, 11, 27) or now.weekday() >= 5:
-        print(json.dumps({"status": "Skipped", "reason": "outside FT weekday horizon"}))
+    if now.date() > prices.date(2026, 11, 28):
+        print(json.dumps({"status": "Skipped", "reason": "outside FT game audit horizon"}))
         return
+    checked_now=now
+    now=decision_clock(now)
     book = prices.auth_book()
     tracked = prices.tracking(book)
     archive = book.worksheet("DAILY CLOSES")
@@ -324,9 +378,17 @@ def main(now=None):
         faults.append(f"DAILY CLOSES!L5:P{archive.row_count}: fresh post12:20 pretrade receipt missing")
     price_state = "FAILED" if faults else "SAVED"
     portfolio = prices.portfolio_rows(book.worksheet("Portfolio"))
-    analysis = book.worksheet("TRADE ANALYSIS").get("A4:M100",value_render_option="UNFORMATTED_VALUE")
+    analysis_ws=book.worksheet("TRADE ANALYSIS")
+    full_analysis=analysis_ws.get(f"A1:M{analysis_ws.row_count}",value_render_option="UNFORMATTED_VALUE")
+    analysis=full_analysis[3:100]
     gates = book.worksheet("PRICE GATES").get("A75:K93",value_render_option="UNFORMATTED_VALUE")
     view_faults = view_health(portfolio,analysis,gates)
+    stress_faults,stress_gaps=stress.health(full_analysis)
+    view_faults.extend(stress_faults)
+    for n,row in enumerate(full_analysis,1):
+        for c,v in enumerate(row):
+            if isinstance(v,str) and v in {"#REF!","#VALUE!","#DIV/0!","#NAME?","#N/A","#NUM!","#ERROR!"}:
+                view_faults.append(f"TRADE ANALYSIS!{chr(65+c)}{n}: {v}")
     performance = book.worksheet("PERFORMANCE")
     performance_note, performance_faults = performance_status(now,
         performance.get("A9:W100",value_render_option="UNFORMATTED_VALUE"),
@@ -342,24 +404,29 @@ def main(now=None):
     faults.extend(finance.health(now, monitor.get("U210:V215", value_render_option="UNFORMATTED_VALUE"),
         book.worksheet("Decision Cards").get("A41:AF60", value_render_option="UNFORMATTED_VALUE"),
         [(r[0],r[2],r[3]) for r in portfolio if len(r)>3 and isinstance(r[2],(int,float)) and r[2]>0]))
-    required = {r[0] for r in portfolio if len(r) >= 3 and isinstance(r[2], (int, float)) and r[2] > 0}
-    required.update(r[0] for r in book.worksheet("ROTATION BENCH").get("C5:C15") if r and r[0])
+    bench = book.worksheet("ROTATION BENCH").get("C5:C15")
     source = book.worksheet("Sources")
     b39 = source.get("B39", value_render_option="UNFORMATTED_VALUE")
     verified = b39[0][0] if b39 and b39[0] else 0
     intake = source.get("A46:I1000", value_render_option="UNFORMATTED_VALUE")
-    reviews = book.worksheet("Reviews").get("A8:J1001", value_render_option="UNFORMATTED_VALUE")
+    reviews = book.worksheet("Reviews").get("A8:N1001", value_render_option="UNFORMATTED_VALUE")
     snapshots = book.worksheet("Decision History").get("A5:S1000", value_render_option="UNFORMATTED_VALUE")
     # Independent review writes can arrive while our paced reads are in flight.
     # Judge their timestamps at observation time, not the earlier process start.
     # A truly future timestamp is still rejected; injected test clocks stay fixed.
     if not injected_now:
-        now = datetime.now(prices.TORONTO)
+        checked_now = datetime.now(prices.TORONTO)
+        now=decision_clock(checked_now)
+    required=required_symbols(portfolio,bench,reviews,now)
     research, review, issues = evaluate(now, intake, reviews, snapshots, required, verified)
     faults.extend(issues)
     health = book.worksheet("BACKEND HEALTH")
-    checks = [["WORKBOOK CONSISTENCY","FAILED" if view_faults+performance_faults else "PASS",
-               " | ".join(view_faults+performance_faults) or "Current holdings, allocation totals and account-value links agree"],
+    consistency="FAILED" if view_faults+performance_faults else "PARTIAL" if stress_gaps else "PASS"
+    coverage_note="Current holdings, allocation totals, scenario mapping and account-value links agree"
+    if stress_gaps:
+        coverage_note += "; scenario assumptions UNKNOWN at TRADE ANALYSIS!"+",".join(stress_gaps)+"; stress totals unavailable for sizing"
+    checks = [["WORKBOOK CONSISTENCY",consistency,
+               " | ".join(view_faults+performance_faults) or coverage_note],
               ["ACCOUNT PERFORMANCE",performance_note,"Account value is separate from stock momentum and workflow completion"]]
     if health.get("A41:C42",value_render_option="FORMATTED_VALUE") != checks:
         health.update(range_name="A41:C42",values=checks,value_input_option="RAW")
@@ -393,7 +460,7 @@ def main(now=None):
             details += "; post-cutoff research queued for next trade-day review"
     else:
         details = "Waiting for unfinished stages; not yet due. This is not an end-to-end completion receipt."
-    delivery = delivery_status(now, logs, intake, reviews)
+    delivery = delivery_status(now, logs, intake, reviews,review_ok=review in {"SAVED","NEXT-DAY INPUTS"})
     window = health.get("B37", value_render_option="FORMATTED_VALUE")
     persisted_delivery = window[0][0] if window and window[0] else ""
     if persisted_delivery != delivery:
@@ -402,7 +469,9 @@ def main(now=None):
             raise RuntimeError("BACKEND HEALTH!B37: delivery-state readback mismatch")
     if "MISSED" in delivery:
         details += " | Prewindow delivery MISSED: BACKEND HEALTH!B37, Sources!I46:I1000, Reviews!A8:J1001, DAILY CLOSES!L5:P200. Current recovery does not backdate the missed window."
-    record = [prices.serial(now), price_state, research, review, len(tracked), len(required), details[:48000], link, os.getenv("GITHUB_SHA", "local")]
+    if checked_now.date()!=now.date():
+        details="Diagnostic of last required trading window "+str(now.date())+"; actual check "+checked_now.isoformat()+". "+details
+    record = [prices.serial(checked_now), price_state, research, review, len(tracked), len(required), details[:48000], link, os.getenv("GITHUB_SHA", "local")]
     changed = should_append_audit(previous, record)
     if changed:
         if dest > 1000:
@@ -415,11 +484,11 @@ def main(now=None):
         # replace holdings or orders. Colour actual faults red and recoveries
         # neutral, while preserving a specific comment linking to exact cells.
         desk = book.worksheet("TRADE DESK")
-        note = f"Persistence audit BACKEND HEALTH!A{dest}:I{dest}, {now.isoformat()}. " + details
+        note = f"Persistence audit BACKEND HEALTH!A{dest}:I{dest}, {checked_now.isoformat()}. " + details
         warning = bool(faults) or "MISSED" in str(delivery)
         background = {"red": 0.98, "green": 0.84, "blue": 0.84} if warning else {"red": 0.93, "green": 0.95, "blue": 0.97}
         desk_text = system_state_text(faults, research, review, delivery)
-        stamp = now.strftime("%d %b %H:%M")
+        stamp = checked_now.strftime("%d %b %H:%M")
         book.batch_update({"requests": [
             {"updateCells": {"range": {"sheetId": desk.id, "startRowIndex": 12, "endRowIndex": 13, "startColumnIndex": 0, "endColumnIndex": 2},
                 "rows": [{"values": [

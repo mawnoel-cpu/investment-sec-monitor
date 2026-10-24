@@ -285,6 +285,30 @@ def summary(a):
     return f"FIN: {score}; coverage {a['coverage']:.0%}; {a['confidence']}; sustainability {a['scores']['sustainability']}; {a['sustainability_detail'].split(';')[0]}; CDS UNKNOWN" if a["cds"].startswith("UNKNOWN") else f"FIN: {score}; coverage {a['coverage']:.0%}; {a['confidence']}; {a['cds']}"
 
 
+def reason_updates(rows, assessments, now):
+    """Bound prose updates to the decision table; fail before any mutation."""
+    end = next((i for i, row in enumerate(rows) if value(row, 0) == "TOTAL SELL"), None)
+    if end is None:
+        raise ValueError("TRADE ANALYSIS!A4:F100: TOTAL SELL boundary missing")
+    names = [value(r, 0) for r in rows[:end] if value(r, 0)]
+    if len(names) != len(set(names)):
+        raise ValueError("TRADE ANALYSIS!A4:F100: duplicate decision ticker")
+    updates = []
+    for n, row in enumerate(rows[:end], 4):
+        ticker = value(row, 0)
+        if ticker not in assessments:
+            continue
+        old = value(row, 5)
+        if not isinstance(old, str):
+            raise ValueError(f"TRADE ANALYSIS!F{n}: expected decision prose, found numeric input")
+        a = assessments[ticker]
+        old = old.split("\nFINANCIAL STRESS [")[0]
+        updates.append((n, old + f"\nFINANCIAL STRESS [{now.date()}]: " + summary(a)
+                        + " | " + a["options"] + " | " + a["scope"]
+                        + " | Reversal: " + a["reversal"]))
+    return updates
+
+
 def health(now, receipt, rows, held):
     fields = {value(r,0):value(r,1) for r in receipt}
     faults=[]
