@@ -94,6 +94,13 @@ class RepairRegressionTests(unittest.TestCase):
         self.assertEqual(h.required_symbols([["PSX","PSX",.05,.05]],[["NVDA"],["AVGO"]],[row],now),
                          {"PSX","NVDA","AVGO","CRM","JPM"})
 
+    def test_zero_or_missing_price_cannot_certify_snapshot(self):
+        from test_pipeline_health import PersistenceTests
+        for col,value in ((11,0),(11,""),(14,0),(15,"")):
+            args=list(PersistenceTests().fixture())
+            args[3][0][col]=value
+            self.assertEqual(h.evaluate(*args)[1],"INCOMPLETE")
+
 
 if __name__=="__main__":
     unittest.main()

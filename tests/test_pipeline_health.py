@@ -11,6 +11,7 @@ class PersistenceTests(unittest.TestCase):
         intake=[[t,"Partial",2,2,1,0,0,"Finalized; broad backlog remains",t]]
         reviews=[[t,"Daily",t,"portfolio","risk","TRIM ALAB to5%; other holdings HOLD","sources","audit","partial coverage","Daily:2026-10-14"]]
         snaps=[[t,"Daily:2026-10-14","ALAB"]+[""]*7+["TRIM"]+[""]*7+["Verified completed session"]]
+        snaps[0][11:16]=[100,"USD","SPY",100,"PRIMARY:issuer"]
         return now,intake,reviews,snaps,{"ALAB"},t
 
     def test_partial_coverage_can_have_verified_persistence(self):

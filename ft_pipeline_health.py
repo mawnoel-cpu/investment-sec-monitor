@@ -90,7 +90,10 @@ def evaluate(now, intake, reviews, snapshots, required, verified):
     invalid = sorted(value(r, 2) for r in saved if value(r, 2) in required and
                      (not isinstance(value(r, 0), (int, float)) or
                       not day <= value(r, 0) <= prices.serial(now) or
-                      not value(r, 10) or not value(r, 18)))
+                      not value(r, 10) or not value(r, 18) or
+                      not stress.numeric(value(r,11)) or value(r,11)<=0 or
+                      not value(r,12) or not stress.numeric(value(r,14)) or value(r,14)<=0 or
+                      not value(r,15)))
     complete = False
     review_state = "PENDING"
     location = "Reviews!A8:J1001 / Decision History!A5:S1000"
@@ -420,6 +423,12 @@ def main(now=None):
     required=required_symbols(portfolio,bench,reviews,now)
     research, review, issues = evaluate(now, intake, reviews, snapshots, required, verified)
     faults.extend(issues)
+    if now.time()>=time(13,40) and not any(scheduled_intake(r)
+            and int(value(r,0))==int(prices.serial(now))
+            and value(r,1) in {"Complete","Partial"}
+            and stress.numeric(value(r,8)) and value(r,0)<=r[8]<=prices.serial(now)
+            for r in intake):
+        faults.append("Sources!A46:I1000: scheduled research receipt missing; early/manual saved audits do not prove the owner ran")
     health = book.worksheet("BACKEND HEALTH")
     consistency="FAILED" if view_faults+performance_faults else "PARTIAL" if stress_gaps else "PASS"
     coverage_note="Current holdings, allocation totals, scenario mapping and account-value links agree"
