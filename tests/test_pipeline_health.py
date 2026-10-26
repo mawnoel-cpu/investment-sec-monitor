@@ -157,3 +157,31 @@ class PersistenceTests(unittest.TestCase):
         for column, bad in ((0, 1), (0, "bad"), (10, ""), (18, "")):
             f=list(self.fixture());f[3][0][column]=bad
             self.assertEqual(h.evaluate(*f)[1], "INCOMPLETE")
+    
+    def test_missing_company_is_documented_gap_not_broken_mapping(self):
+        now = datetime(2026,10,26,10,45,tzinfo=p.TORONTO)
+        row = [""]*32
+        row[0],row[1] = "PSX",p.serial(now)
+        row[15],row[16],row[17],row[18] = .3,None,0,None
+        row[29],row[30],row[31] = "Company score UNKNOWN; issuer review required",0,"hash"
+        card = [""]*32
+        card[0],card[23],card[26] = "PSX",.3,0
+        held = [["PSX","Phillips 66",.05,.05]]
+        receipt = [["DECISION INPUTS","VERIFIED"]]
+        self.assertEqual(h.decision_input_health(now,receipt,[card],[row],held),[])
+        row[18],card[27] = .105,.105
+        self.assertTrue(any("incorrectly certified" in x for x in h.decision_input_health(now,receipt,[card],[row],held)))
+        row[18],card[27],row[17] = None,"",None
+        self.assertTrue(any("price/macro input missing" in x for x in h.decision_input_health(now,receipt,[card],[row],held)))
+
+    def test_sunday_rotation_preparation_not_false_friday_failure(self):
+        now = datetime(2026,10,25,21,42,tzinfo=p.TORONTO)
+        receipt = [["ROTATION STATUS","COMPLETE"],["COMPLETED AT",p.serial(now)],
+                   ["PRICE SESSION",p.serial(datetime(2026,10,23))]]
+        held = [["PSX","Phillips 66",.05,.05]]
+        proposal = ["PSX",.05,.05,"HOLD",.05,"verified Friday close",
+                    p.serial(now),p.serial(datetime(2026,10,23)),"","","VERIFIED PRIOR CLOSE",
+                    "CLEAR","XLE"]
+        self.assertEqual(h.rotation_health(now,receipt,[proposal],held,[]),[])
+        self.assertTrue(h.delivery_status(
+            datetime(2026,10,23,23,59,tzinfo=p.TORONTO),[],[],[]).startswith("MISSED"))

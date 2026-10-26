@@ -67,3 +67,10 @@ without point-in-time execution and decision provenance. No weights are optimize
 
 Validation: `python tests/run_offline.py` and
 `node --test tests/test_ft_gmail_queue.cjs`. No credentials or network are needed.
+
+The persistence audit now distinguishes documented UNKNOWN issuer-assessment scores
+from broken score links. It keeps composite scores blank, verifies the price and
+macro links, and lists missing issuer analyses in BACKEND HEALTH coverage.
+Fabricated zero/composite scores and broken links remain faults. A weekend
+next-session preparation is checked at its real capture time; the separate
+prewindow audit still preserves Friday's actual missed deadlines.

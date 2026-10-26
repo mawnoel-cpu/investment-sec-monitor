@@ -293,7 +293,7 @@ def rotation_health(now, receipt, proposed, portfolio, runs):
                 f" versus Portfolio!C{portfolio_row}:D{portfolio_row}; rerun rotation"
             )
     deadline = day + (14*60+45)/1440
-    if now.time()>=time(14,45):
+    if now.weekday()<5 and now.date() not in prices.US_HOLIDAYS and now.time()>=time(14,45):
         ontime = any(isinstance(value(r,0),(int,float)) and day<=r[0]<=deadline and value(r,2)=="COMPLETE" for r in runs)
         if not ontime:
             faults.append("PRICE MONITOR!A1451:J2000: no verified rotation/recommendation delivery by14:45 Toronto; later recovery is LATE")
@@ -366,8 +366,23 @@ def decision_input_health(now,receipt,cards,inputs,portfolio):
             faults.append(f'Decision Cards!A4:AF39 / A66:AF104: {ticker} missing mapping');continue
         if not stress.numeric(value(row,1)) or not 0<=prices.serial(now)-row[1]<=3:
             faults.append(f'Decision Cards!A66:AF104: {ticker} stale/future capture')
-        if not all(stress.numeric(value(row,i)) for i in (15,16,17,18)):
-            faults.append(f'Decision Cards!A66:AF104: {ticker} company/price/macro UNKNOWN; see AD input gaps');continue
+        if not all(stress.numeric(value(row,i)) for i in (15,17)):
+            faults.append(f'Decision Cards!A66:AF104: {ticker} price/macro input missing; see AD input gaps')
+            continue
+        if not stress.numeric(value(row,16)):
+            # No reviewed issuer direction is a research-coverage gap, not a
+            # failed price collector. A fabricated composite remains a fault.
+            if (value(row,18) not in ("",None) or value(card,27) not in ("",None)
+                    or 'Company score UNKNOWN' not in str(value(row,29))
+                    or value(row,30) != 0):
+                faults.append(f'Decision Cards!A66:AF104: {ticker} missing-company score incorrectly certified; see Q/S/AD/AE')
+            for dest,src in ((23,15),(26,17)):
+                if not stress.numeric(value(card,dest)) or abs(card[dest]-row[src])>1e-8:
+                    faults.append(f'Decision Cards!A4:AF39: {ticker} column {dest+1} disagrees with persisted inputs')
+            continue
+        if not stress.numeric(value(row,18)):
+            faults.append(f'Decision Cards!A66:AF104: {ticker} verified inputs but composite missing')
+            continue
         expected=.45*row[16]+.35*row[15]+.20*row[17]
         if abs(row[18]-expected)>1e-8 or not value(row,31):
             faults.append(f'Decision Cards!A66:AF104: {ticker} score/hash invalid')
@@ -427,16 +442,22 @@ def main(now=None):
     rotation_runs = monitor.get("A1451:J2000", value_render_option="UNFORMATTED_VALUE")
     if monitor.row_count >= 2601:
         rotation_runs += monitor.get(f"A2601:J{monitor.row_count}", value_render_option="UNFORMATTED_VALUE")
-    faults.extend(rotation_health(now, monitor.get("U195:V202", value_render_option="UNFORMATTED_VALUE"),
+    # Weekend preparation uses its actual capture date; historical missed
+    # Friday trading-window deliveries remain in the separate audit.
+    faults.extend(rotation_health(checked_now, monitor.get("U195:V202", value_render_option="UNFORMATTED_VALUE"),
         monitor.get("A2051:Q2070", value_render_option="UNFORMATTED_VALUE"), portfolio, rotation_runs))
     faults.extend(finance.health(now, monitor.get("U210:V215", value_render_option="UNFORMATTED_VALUE"),
         book.worksheet("Decision Cards").get("A41:AF60", value_render_option="UNFORMATTED_VALUE"),
         [(r[0],r[2],r[3]) for r in portfolio if len(r)>3 and isinstance(r[2],(int,float)) and r[2]>0]))
     cards_ws=book.worksheet('Decision Cards')
+    inputs=cards_ws.get('A66:AF104',value_render_option='UNFORMATTED_VALUE')
     faults.extend(decision_input_health(checked_now,
         monitor.get('U216:V218',value_render_option='UNFORMATTED_VALUE'),
         cards_ws.get('A4:AF39',value_render_option='UNFORMATTED_VALUE'),
-        cards_ws.get('A66:AF104',value_render_option='UNFORMATTED_VALUE'),portfolio))
+        inputs,portfolio))
+    held_symbols={value(row,0) for row in portfolio if stress.numeric(value(row,2)) and row[2]>0}
+    company_gaps=sorted(value(row,0) for row in inputs if value(row,0) in held_symbols
+                        and not stress.numeric(value(row,16)))
     bench = book.worksheet("ROTATION BENCH").get("C5:C15")
     source = book.worksheet("Sources")
     b39 = source.get("B39", value_render_option="UNFORMATTED_VALUE")
@@ -462,6 +483,9 @@ def main(now=None):
     health = book.worksheet("BACKEND HEALTH")
     consistency="FAILED" if view_faults+performance_faults else "PARTIAL" if stress_gaps else "PASS"
     coverage_note="Current holdings, allocation totals, scenario mapping and account-value links agree"
+    if company_gaps:
+        coverage_note += ("; company assessments UNKNOWN (not negative/zero): "+
+                          ",".join(company_gaps)+"; 45/35/20 composites blocked pending eligible issuer evidence")
     if stress_gaps:
         coverage_note += "; scenario assumptions UNKNOWN at TRADE ANALYSIS!"+",".join(stress_gaps)+"; stress totals unavailable for sizing"
     checks = [["WORKBOOK CONSISTENCY",consistency,
