@@ -352,6 +352,31 @@ def performance_status(now, rows, displayed_value, portfolio_equity):
     return f"{stale}; {stamp}; {row[1]:,.0f} credits; since100,000 {row[1]/100000-1:+.2%}; not a closing-settlement or trade-return attribution", faults
 
 
+def decision_input_health(now,receipt,cards,inputs,portfolio):
+    """Independent read-back of mappings, missing-vs-zero and production weights."""
+    faults=[]
+    if value(value(receipt,0,[]),1)!='VERIFIED':
+        faults.append('PRICE MONITOR!V216: decision-input persistence not VERIFIED')
+    source={value(r,0):r for r in inputs if value(r,0)}
+    mapped={value(r,0):r for r in cards if value(r,0)}
+    for position in portfolio:
+        if not stress.numeric(value(position,2)) or position[2]<=0:continue
+        ticker=position[0];row=source.get(ticker,[]);card=mapped.get(ticker,[])
+        if not row or not card:
+            faults.append(f'Decision Cards!A4:AF39 / A66:AF104: {ticker} missing mapping');continue
+        if not stress.numeric(value(row,1)) or not 0<=prices.serial(now)-row[1]<=3:
+            faults.append(f'Decision Cards!A66:AF104: {ticker} stale/future capture')
+        if not all(stress.numeric(value(row,i)) for i in (15,16,17,18)):
+            faults.append(f'Decision Cards!A66:AF104: {ticker} company/price/macro UNKNOWN; see AD input gaps');continue
+        expected=.45*row[16]+.35*row[15]+.20*row[17]
+        if abs(row[18]-expected)>1e-8 or not value(row,31):
+            faults.append(f'Decision Cards!A66:AF104: {ticker} score/hash invalid')
+        for dest,src in ((23,15),(25,16),(26,17),(27,18)):
+            if not stress.numeric(value(card,dest)) or abs(card[dest]-row[src])>1e-8:
+                faults.append(f'Decision Cards!A4:AF39: {ticker} column {dest+1} disagrees with persisted inputs')
+    return faults
+
+
 def main(now=None):
     injected_now = now is not None
     now = now or datetime.now(prices.TORONTO)
@@ -407,6 +432,11 @@ def main(now=None):
     faults.extend(finance.health(now, monitor.get("U210:V215", value_render_option="UNFORMATTED_VALUE"),
         book.worksheet("Decision Cards").get("A41:AF60", value_render_option="UNFORMATTED_VALUE"),
         [(r[0],r[2],r[3]) for r in portfolio if len(r)>3 and isinstance(r[2],(int,float)) and r[2]>0]))
+    cards_ws=book.worksheet('Decision Cards')
+    faults.extend(decision_input_health(checked_now,
+        monitor.get('U216:V218',value_render_option='UNFORMATTED_VALUE'),
+        cards_ws.get('A4:AF39',value_render_option='UNFORMATTED_VALUE'),
+        cards_ws.get('A66:AF104',value_render_option='UNFORMATTED_VALUE'),portfolio))
     bench = book.worksheet("ROTATION BENCH").get("C5:C15")
     source = book.worksheet("Sources")
     b39 = source.get("B39", value_render_option="UNFORMATTED_VALUE")
@@ -530,4 +560,5 @@ def main(now=None):
 
 if __name__ == "__main__":
     main()
+
 

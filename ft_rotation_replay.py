@@ -147,6 +147,49 @@ def prices_venue(ticker):
     return p.venue_info(ticker,"")[0]
 
 
+def model_comparison(history,start,end):
+    """Frozen-input sensitivity; do not fabricate executable historical trades.
+
+    Missing inputs are excluded. Late recovery captures remain late, even if
+    their key says Daily. Today's facts/holdings cannot fill historical blanks.
+    FT next-open restrictions are reported for each original capture. Price
+    data without timestamp provenance cannot establish executable performance.
+    """
+    cases=[];missing={k:0 for k in ('company','price','macro')};total=0
+    def action(c,price,score):
+        if price<=-.65 or score<=-.35 and c<=0:return 'REVIEW TRIM'
+        if score>=.35 and c>=0:return 'REVIEW ADD'
+        return 'HOLD'
+    for row in history:
+        if not f.number(f.value(row,0)) or not start<=p.day_of(row[0])<=end:continue
+        total+=1
+        inputs=[f.value(row,i) for i in (5,6,7)]
+        good=True
+        for name,x in zip(missing,inputs):
+            if not f.number(x) or not -1<=x<=1:missing[name]+=1;good=False
+        if not good:continue
+        when=(p.EPOCH+timedelta(days=row[0])).replace(tzinfo=p.TORONTO)
+        company,price,macro=inputs
+        base=.45*company+.35*price+.20*macro
+        alt=.50*company+.40*price+.10*macro
+        coverage=str(f.value(row,18))
+        verified=('VERIFIED PRIOR CLOSE' in coverage and not any(x in coverage.lower() for x in ('not verified','unverified price','missing15:15','late recovery','late recovery')))
+        prewindow=time(14,20)<=when.time()<=time(14,45)
+        order,execution=r.execution_window(when,prices_venue(row[2]))
+        cases.append({'ticker':row[2],'capture':when.isoformat(),'key':row[1],
+            'held':row[3],'company':company,'price':price,'macro':macro,
+            'base':base,'alternative':alt,'base_band':action(company,price,base),
+            'alternative_band':action(company,price,alt),'verified_price_provenance':verified,
+            'within_review_window':prewindow,'earliest_order':order,'earliest_execution':execution})
+    return {'status':'INCONCLUSIVE — production 45/35/20 retained','history_rows':total,
+        'complete_frozen_inputs':len(cases),'missing_inputs':missing,
+        'comparable_prewindow_cases':sum(c['within_review_window'] and c['verified_price_provenance'] for c in cases),
+        'threshold_changes':sum(c['base_band']!=c['alternative_band'] for c in cases),
+        'cases':cases,'simulated_returns':None,'simulated_drawdown':None,
+        'false_positive_trade_rate':None,'earlier_deterioration_or_rotation_detection':None,
+        'limitations':'Sparse late/recovery inputs; no complete contemporaneous portfolio decisions, verified historical order eligibility, opening fills/costs or qualified replacements. No performance or statistical-significance claim. Sector price-warning replay is separate from the macro-weight test.'}
+
+
 def illustrative_returns(ohlc,entry,end):
     result={}
     for t,obj in ohlc.items():
@@ -176,6 +219,8 @@ def main():
     if args.financial_evidence:
         if not args.decision_history:raise ValueError("Financial replay requires frozen Decision History; never use today's holdings")
         result["financial_stress"]=financial_replay(hist,read_rows(args.financial_evidence),read_rows(args.decision_history),date.fromisoformat(args.start),end)
+    if args.decision_history:
+        result['model_comparison']=model_comparison(read_rows(args.decision_history),date.fromisoformat(args.start),end)
     if args.ohlc:
         result["illustrative_oct12_open_to_end"]=illustrative_returns(json.loads(Path(args.ohlc).read_text()),date(2026,10,12),end)
     Path(args.output).write_text(json.dumps(result,indent=2))
@@ -184,3 +229,4 @@ def main():
 
 
 if __name__=="__main__":main()
+

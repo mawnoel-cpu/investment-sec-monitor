@@ -17,6 +17,7 @@ import re
 import ft_price_writer as prices
 import ft_financial_stress as finance
 import ft_trade_desk as desk_views
+import ft_decision_inputs as decision_inputs
 from ft_rotation_universe import SECTORS, INDUSTRIES, COMPANY_SECTOR, COMPANY_INDUSTRY
 
 END = date(2026, 11, 27)
@@ -118,7 +119,7 @@ def returns(hist, ticker, end, n, venue="US"):
 def metric(hist, ticker, end):
     venue = "LSE" if ticker.endswith(":LSE") else "US"
     out = {"ticker": ticker, "session": str(end), "close": hist.get(ticker, {}).get(end)}
-    for n in (3, 5, 10, 20):
+    for n in (3, 5, 10, 20, 60):
         out[f"r{n}"] = returns(hist, ticker, end, n, venue)
         # UK/US comparisons use the SAME endpoints; no mismatched close dates.
         start = session_window(end, n, venue)[0]
@@ -509,10 +510,10 @@ def proposal_note_updates(sheet_id, desk_rows, proposed):
     return requests
 
 
-def main(now=None):
+def main(now=None, prepare_next_session=False):
     injected_now = now is not None
     now = now or datetime.now(prices.TORONTO)
-    if now.date() > END or now.weekday() >= 5:
+    if now.date() > END or (now.weekday() >= 5 and not prepare_next_session):
         print(json.dumps({"status": "Skipped", "reason": "outside game weekday horizon"}))
         return
     book = prices.auth_book()
@@ -652,6 +653,17 @@ def main(now=None):
     write_verified(monitor, f"A2051:Q{2050 + len(proposed)}", proposed)
     # Clear only prior own proposals below the current count, avoiding stale names.
     monitor.batch_clear([f"A{2051 + len(proposed)}:Q2070"])
+    # Scoring failures cannot suppress the independent risk-control proposals.
+    try:
+        input_state = decision_inputs.sync(book,hist,evidence,signals,portfolio,candidates,now)
+        write_verified(monitor,'U216:V218',[
+            ['DECISION INPUTS','VERIFIED'],['DECISION INPUT AS OF',prices.serial(now)],
+            ['DECISION INPUT RECEIPT',json.dumps(input_state,sort_keys=True)]])
+    except Exception as exc:
+        fault=f'Decision Cards!A4:AF39 / A65:AF104: input mapping failed: {type(exc).__name__}: {str(exc)[:500]}'
+        faults.append(fault)
+        write_verified(monitor,'U216:V218',[
+            ['DECISION INPUTS','FAILED'],['DECISION INPUT AS OF',prices.serial(now)],['DECISION INPUT RECEIPT',fault]])
     # Attach a full reason and exact data location to the two-column display.
     # The price writer precedes this step; SYSTEM/B13 remains health-owned.
     desk = book.worksheet("TRADE DESK")
@@ -687,7 +699,7 @@ def main(now=None):
             raise RuntimeError("PRICE MONITOR!A2600:J2600: unexpected continuation schema")
         if not header or not any(header[0]):
             write_verified(monitor, "A2600:J2600", [RUN_HEADERS])
-    write_verified(monitor, f"A{dest}:J{dest}", [[prices.serial(complete), "LIVE", state, prices.serial(end), 11-sum(t in SECTORS for t in missing), len(INDUSTRIES)-sum(t in INDUSTRIES for t in missing), len(alerts), " | ".join(faults)[:45000], os.getenv("GITHUB_RUN_ID", "local"), os.getenv("GITHUB_SHA", "local")]])
+    write_verified(monitor, f"A{dest}:J{dest}", [[prices.serial(complete), "NEXT-SESSION PREPARATION" if prepare_next_session and now.weekday()>=5 else "LIVE", state, prices.serial(end), 11-sum(t in SECTORS for t in missing), len(INDUSTRIES)-sum(t in INDUSTRIES for t in missing), len(alerts), " | ".join(faults)[:45000], os.getenv("GITHUB_RUN_ID", "local"), os.getenv("GITHUB_SHA", "local")]])
     print(json.dumps({"status": state, "session": str(end), "sectors": 11-sum(t in SECTORS for t in missing), "warnings": len(alerts), "holdings": len(proposed), "candidates": len(ranked), "readback": "verified", "orders": "unchanged", "faults": faults}))
     if faults:
         raise RuntimeError("Rotation coverage incomplete; see PRICE MONITOR!V199")
@@ -695,10 +707,14 @@ def main(now=None):
 
 if __name__ == "__main__":
     try:
-        main()
+        import argparse
+        parser=argparse.ArgumentParser()
+        parser.add_argument('--prepare-next-session',action='store_true',help='Allow weekend preparation at the real capture time; never creates a daily review receipt')
+        main(prepare_next_session=parser.parse_args().prepare_next_session)
     except Exception as exc:
         # A STARTED receipt plus the independent health writer exposes a failed
         # or interrupted run. Never turn it into successful HOLD decisions.
         print(json.dumps({"status": "FAILED", "error": str(exc)[:400]}))
         raise
+
 

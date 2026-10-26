@@ -16,6 +16,8 @@ on:
       - "ft_rotation_universe.py"
       - "ft_sector_rotation.py"
       - "ft_financial_stress.py"
+      - "ft_decision_inputs.py"
+      - "tests/test_decision_inputs.py"
       - "tests/test_financial_stress.py"
       - "ft_sheets_retry.py"
       - "tests/test_sector_rotation.py"
@@ -73,11 +75,12 @@ jobs:
         if: always() && github.ref == 'refs/heads/main'
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
-        run: python ft_sector_rotation.py
+        run: python ft_sector_rotation.py --prepare-next-session
 
       - name: Verify durable research and review receipts
         if: always() && github.ref == 'refs/heads/main'
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
         run: python ft_pipeline_health.py
+
 

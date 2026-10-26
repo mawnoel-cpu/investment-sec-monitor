@@ -24,7 +24,7 @@ HEADERS = ["TICKER", "ASSESSED AT", "FINANCING 0-100", "FINANCING x35%",
            "CHANGE SINCE VERIFIED", "INPUT KEYS / REFERENCES", "STATUS", "REVIEW BAND",
            "HELD", "QUEUED", "TARGET", "SELL pp", "DESTINATION / CONSTRAINT",
            "NEXT EXECUTION", "REVERSAL TEST", "MODEL", "INPUT HASH", "ASSESSMENT JSON"]
-PROFILES = {"hyperscaler", "refiner", "upstream", "miner", "pharma", "defence", "software", "neocloud"}
+PROFILES = {"hyperscaler", "refiner", "upstream", "miner", "pharma", "defence", "software", "neocloud", "retail", "exchange", "insurance", "bank", "semiconductor", "midstream"}
 
 
 def value(row, i, default=""):
@@ -89,6 +89,8 @@ def sustainability(d):
     """
     if not d:
         return None, "Cash-flow/capex evidence UNKNOWN", False
+    if d.get('profile') in {'bank','insurance'}:
+        return None, "Bank/insurer: industrial cash-capex score not applicable; use verified underwriting, capital and credit ratios", False
     ocf, capex = d.get("ocf"), d.get("capex")
     if (not number(ocf) or not number(capex) or capex < 0 or not d.get("capex_basis")
         or not number(d.get("period_months")) or d["period_months"] not in {3,6,9,12}
@@ -339,3 +341,4 @@ def health(now, receipt, rows, held):
         except (ValueError,TypeError,KeyError):
             faults.append(f"Decision Cards!A41:AF60: {ticker} financial arithmetic/readback mismatch")
     return faults
+
