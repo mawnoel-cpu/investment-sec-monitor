@@ -111,6 +111,16 @@ class FinancialEvidenceTests(unittest.TestCase):
         d["previous"]["capex_basis"]="noncash_leases"
         self.assertEqual(f.sustainability(d)[0],45)
 
+    def test_industrial_grid_profile_is_kept_without_inventing_capex(self):
+        row=evidence(profile="industrial_grid",capex="UNKNOWN",capex_basis="UNKNOWN",reported_fcf=60)
+        observations,faults=f.financial_inputs([row],NOW)
+        self.assertFalse(faults)
+        self.assertIn(("AAA","fundamentals"),observations)
+        score,why,material=f.sustainability(observations[("AAA","fundamentals")])
+        self.assertIsNone(score)
+        self.assertIn("incomplete",why)
+        self.assertFalse(material)
+
     def test_guidance_cut_and_adverse_price_are_independent_reasons(self):
         obs,_=f.financial_inputs([evidence(cash_guidance_cut_pct=25,guidance_basis="matched annual FCF midpoint, issuer release")],NOW)
         self.assertTrue(f.assess("AAA",obs,proposal(weak=True),signals(),NOW)["material"])
