@@ -24,7 +24,7 @@ HEADERS = ["TICKER", "ASSESSED AT", "FINANCING 0-100", "FINANCING x35%",
            "CHANGE SINCE VERIFIED", "INPUT KEYS / REFERENCES", "STATUS", "REVIEW BAND",
            "HELD", "QUEUED", "TARGET", "SELL pp", "DESTINATION / CONSTRAINT",
            "NEXT EXECUTION", "REVERSAL TEST", "MODEL", "INPUT HASH", "ASSESSMENT JSON"]
-PROFILES = {"hyperscaler", "refiner", "upstream", "miner", "pharma", "defence", "software", "neocloud", "retail", "exchange", "insurance", "bank", "semiconductor", "midstream"}
+PROFILES = {"hyperscaler", "refiner", "upstream", "miner", "pharma", "defence", "software", "neocloud", "retail", "exchange", "insurance", "bank", "semiconductor", "midstream", "industrial_grid"}
 
 
 def value(row, i, default=""):
