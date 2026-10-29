@@ -26,8 +26,8 @@ on:
     # Morning warning/decision fallback before afternoon queue delays can bite.
     - cron: "10 12 * 10 1-5"   # 08:10 Toronto
     - cron: "10 13 1-27 11 1-5" # 08:10 Toronto after DST
-    - cron: "05 18 * 10 1-5"   # 14:05 Toronto extra recovery before 14:45
-    - cron: "05 19 1-27 11 1-5" # 14:05 Toronto after DST
+    - cron: "05 17 * 10 1-5"   # 13:05 Toronto earlier completed-session receipt before 14:15
+    - cron: "05 18 1-27 11 1-5" # 13:05 Toronto after DST
     # Pretrade audit before 14:20 Toronto decision, and post-close archive.
     # October 2026 in EDT.
     - cron: "20 16 * 10 1-5"   # 12:20 Toronto redundancy for delayed Actions queues
