@@ -54,9 +54,9 @@ function environment(subjects,opts={}) {
           if(typeof args[0]==="string") {
             const ref=args[0];
             if(s.name==="Portfolio" && ref==="A8:D100") return defaults.Portfolio;
-            if(s.name==="CANDIDATE POOL" && ref==="A5:A104")
+            if(s.name==="CANDIDATE POOL" && /^A5:A\d+$/.test(ref))
               return [["NVDA"],["ANET"],["ETN"]];
-            if(s.name==="CANDIDATE POOL" && ref==="AJ5:AK104")
+            if(s.name==="CANDIDATE POOL" && /^AJ5:AK\d+$/.test(ref))
               return [["Focus 1","1"],["Focus 4","4"],["Screen only",""]];
             if(s.name==="Sources" && ref==="B42")
               return [[new Date("2026-10-14T21:46:06Z")]];
@@ -126,6 +126,30 @@ function message(subject,domain,i,when){
     getPlainBody(){return "[AI infrastructure financing faces new questions about capex and issuer obligations while company earnings diverge.](https://seekingalpha.example/article)";}
   };
 }
+test("material finance and rotation digests are P2 without a ticker",()=>{
+  const e=environment([]);
+  const u={held:{XOM:true},bench:{NVDA:true},aliases:[{ticker:"XOM",name:"exxon"}]};
+  for(const title of ["AI Data Center Demand","Market Update & Signals 10/30/26",
+    "Venture Capital at Trillion-Dollar Scale","Sector rotation and bond yields"])
+    assert.equal(e.context.ftQueueClassify_(title,"research@substack.com",u).priority,"P2");
+  assert.equal(e.context.ftQueueClassify_("Exxon results","news@ft.com",u).priority,"P1");
+  assert.equal(e.context.ftQueueClassify_("Recipes for dinner now","news@substack.com",u).priority,"P3");
+  assert.equal(e.context.ftQueueClassify_("Buy tickets now","me@personal.test",u),null);
+});
+
+test("candidate universe reads rows beyond the old 104 limit",()=>{
+  const e=environment([]), pool=e.sheets["CANDIDATE POOL"],original=pool.getRange.bind(pool);
+  pool.getLastRow=()=>150;
+  pool.getRange=address=>{
+    if(address==="A5:A150")return {getValues:()=>Array.from({length:146},(_,i)=>[i===145?"GEV":""])};
+    if(address==="AJ5:AK150")return {getValues:()=>Array.from({length:146},(_,i)=>[i===145?"Focus 1":"",""])};
+    return original(address);
+  };
+  const u=e.context.ftQueueUniverse_(e.workbook);
+  assert.equal(u.bench.GEV,true);
+  assert.equal(e.context.ftQueueClassify_("GE Vernova results","news@ft.com",u).priority,"P2");
+});
+
 test("collector stages only relevant metadata, not Gmail mutations",()=>{
   const e=environment(["MSFT earnings beat","Reader dinner reservations",
     "BHP:LSE bond credit risk","Semiconductor AI from a publisher"],
@@ -265,3 +289,4 @@ test("Seeking Alpha welcome promotions are excluded without Evidence, but a mixe
   assert.equal(queue[0][6],"EXCLUDED");
   assert.equal(queue[1][6],"SCREENED");
 });
+

@@ -44,6 +44,12 @@ CHECKPOINT_STAGES = (
 CHECKPOINT_ALLOWED = {"PASS", "PARTIAL", "FAILED", "BLOCKED"}
 
 
+def read_reviews(book):
+    """Read the receipt AND persisted stage diagnostics, without truncating O:Z."""
+    sheet = book.worksheet("Reviews")
+    return sheet.get(f"A8:Z{sheet.row_count}", value_render_option="UNFORMATTED_VALUE")
+
+
 def has_checkpoints(row):
     return any(value(row, index) not in ("", None) for index in range(14, 25))
 
@@ -72,6 +78,7 @@ def checkpoint_diagnostic(row):
     next_stage = ""
     previous = value(row, 0)
     issues = []
+    first_nonpass = ""
     for name, time_col, result_col in CHECKPOINT_STAGES:
         stamp, status = value(row, time_col), value(row, result_col)
         if not stress.numeric(stamp) and not status:
@@ -85,12 +92,15 @@ def checkpoint_diagnostic(row):
             previous = stamp
         if status not in CHECKPOINT_ALLOWED:
             issues.append(name + " result missing/invalid")
+        if status != "PASS" and not first_nonpass:
+            first_nonpass = name + "=" + (str(status) if status else "UNRECORDED")
         last = name + "=" + (str(status) if status else "UNRECORDED")
     elapsed = ""
     if stress.numeric(value(row, 0)) and stress.numeric(previous):
         elapsed = f"; observed {max(0, round((previous - row[0]) * 86400))}s from start"
     reason = str(value(row, 24))[:280]
     return f"checkpoint last {last}; next {next_stage or 'none'}{elapsed}" + (
+        "; first unfinished stage " + first_nonpass if first_nonpass else "") + (
         "; " + ",".join(issues) if issues else "") + (
         "; recorded blocker: " + reason if reason else "")
 
@@ -162,7 +172,7 @@ def evaluate(now, intake, reviews, snapshots, required, verified):
     location = "Reviews!A8:J1001 / Decision History!A5:S1000"
     if len(matches) == 1:
         n, row = matches[0]
-        location = f"Reviews!A{n}:J{n} / Decision History!A5:S1000"
+        location = f"Reviews!A{n}:N{n} / Reviews!O{n}:Z{n} / Decision History!A5:S1000"
         stamp, asof = value(row, 0, 0), review_completion(row)
         decision = str(value(row, 5))
         dates_ok = stress.numeric(stamp) and stress.numeric(asof) and day <= stamp <= asof <= prices.serial(now)
@@ -527,7 +537,7 @@ def main(now=None):
     b39 = source.get("B39", value_render_option="UNFORMATTED_VALUE")
     verified = b39[0][0] if b39 and b39[0] else 0
     intake = source.get("A46:I1000", value_render_option="UNFORMATTED_VALUE")
-    reviews = book.worksheet("Reviews").get("A8:N1001", value_render_option="UNFORMATTED_VALUE")
+    reviews = read_reviews(book)
     snapshots = book.worksheet("Decision History").get("A5:S1000", value_render_option="UNFORMATTED_VALUE")
     # Independent review writes can arrive while our paced reads are in flight.
     # Judge their timestamps at observation time, not the earlier process start.
@@ -648,5 +658,6 @@ def main(now=None):
 
 if __name__ == "__main__":
     main()
+
 
 

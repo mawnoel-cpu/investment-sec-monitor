@@ -171,13 +171,36 @@ function ftQueueUniverse_(book) {
     }
   }
   var pool=book.getSheetByName("CANDIDATE POOL");
-  var names=pool.getRange("A5:A104").getValues();
-  var priorities=pool.getRange("AJ5:AK104").getValues();
+  var last=Math.max(5,pool.getLastRow());
+  var names=pool.getRange("A5:A"+last).getValues();
+  var priorities=pool.getRange("AJ5:AK"+last).getValues();
   for (var j=0; j<names.length; j++) {
     var stock=String(names[j][0]||"").trim();
     var rank=String(priorities[j][0]||"");
     if (stock && /^Focus\s*[1-5]$/i.test(rank) && !held[stock]) bench[stock]=true;
   }
+  // Daily-review candidates and the active bench also require research even
+  // when the quantitative rank has moved them outside Focus 1-5.
+  var active=book.getSheetByName("ROTATION BENCH");
+  if(active) active.getRange("C5:C15").getValues().forEach(function(r){
+    if(r[0] && !held[r[0]]) bench[String(r[0])]=true;
+  });
+  var reviews=book.getSheetByName("Reviews"),latest=null;
+  if(reviews && reviews.getLastRow()>=8) {
+    reviews.getRange("A8:M"+reviews.getLastRow()).getValues().forEach(function(r){
+      var stamp=r[0] instanceof Date ? r[0].getTime() : Number(r[0]);
+      if(r[1]==="Daily" && Number.isFinite(stamp) && (!latest || stamp>latest.stamp)) latest={stamp:stamp,row:r};
+    });
+    if(latest && latest.row[12]) {
+      var coverage=JSON.parse(latest.row[12]);
+      (coverage.candidates||[]).forEach(function(t){if(t && !held[t]) bench[t]=true;});
+    }
+  }
+  var common={XOM:["Exxon","ExxonMobil","Exxon Mobil"],LLY:["Eli Lilly","Lilly"],
+    FANG:["Diamondback"],LMT:["Lockheed Martin"],GEV:["GE Vernova"],
+    JPM:["JPMorgan"],NVDA:["Nvidia"],AVGO:["Broadcom"],PGR:["Progressive"],
+    CB:["Chubb"],AMGN:["Amgen"],VRTX:["Vertex"],WMT:["Walmart"]};
+  Object.keys(common).forEach(function(t){if(held[t]||bench[t]) common[t].forEach(function(name){aliases.push({ticker:t,name:name.toLowerCase()});});});
   return {held:held,bench:bench,aliases:aliases};
 }
 
@@ -209,6 +232,10 @@ function ftQueueClassify_(subject, from, universe) {
   var secondPriority=tickers.some(function(t){return universe.bench[t];});
   var knownPublisher=/(^|\.)(ft\.com|wsj\.com|marketwatch\.com|barrons\.com|bloomberg\.com|substack\.com|seekingalpha\.com|financialtimes\.com|bankofcanada\.ca|bis\.org|federalreserve\.gov|sec\.gov|investor\.|investors\.)/.test(domain);
   var financialTerms=/(earnings|guidance|filing|investor|capital markets|profit warning|credit|interest rates|bond yield|shares|stock market|oil price|energy market|semiconductors|industrial|trade sanctions)/i.test(title);
+  // Cross-sector/financing discovery must not depend on a ticker in a digest
+  // title. This is a priority only, never verified evidence or action weight.
+  var materialTheme=/(sector (rotation|leadership)|market (breadth|update|recap)|credit (stress|spread|risk)|bond yields?|financing|refinancing|capex|cash.flow|data.cent(er|re)|AI (infrastructure|spending|selloff)|semiconductor|memory (names|stocks|cycle)|growth scare|venture capital|Anthropic)/i.test(title);
+  if(knownPublisher && materialTheme) secondPriority=true;
   if (!firstPriority && !secondPriority && !knownPublisher && !financialTerms)
     return null;
   return {priority:firstPriority ? "P1" : secondPriority ? "P2" : "P3",
@@ -460,3 +487,4 @@ function ftGmailQueueScreen_() {
       pendingSeekingAlpha:Math.max(0,target.length-scanned)};
   } finally {lock.releaseLock();}
 }
+

@@ -5,6 +5,26 @@ import ft_price_writer as p
 
 
 class PersistenceTests(unittest.TestCase):
+    def test_live_review_reader_keeps_failed_checkpoints(self):
+        from unittest.mock import Mock
+        f=list(self.fixture()); row=list(f[2][0])+[""]*16
+        row[11]=row[0]; row[13]=row[0]+.001
+        for i,(_,tc,rc) in enumerate(h.CHECKPOINT_STAGES,1):
+            row[tc]=row[0]+i*.0001; row[rc]="PASS"
+        row[17]="FAILED"
+        row[24]="Evidence: issuer URL returned HTTP 404"
+        sheet=Mock(row_count=1500)
+        # Emulate Sheets range projection: an A:N read loses the failure.
+        sheet.get.side_effect=lambda address, **kw: [row[:26 if ':Z' in address else 14]]
+        book=Mock(); book.worksheet.return_value=sheet
+        f[2]=h.read_reviews(book)
+        self.assertEqual(f[2][0][24],row[24])
+        report=h.evaluate(*f)
+        self.assertEqual(report[1],"CHECKPOINT INCOMPLETE")
+        self.assertIn("first unfinished stage EVIDENCE=FAILED",report[2][0])
+        self.assertIn("Reviews!O8:Z8",report[2][0])
+        self.assertIn("HTTP 404",report[2][0])
+
     def fixture(self):
         now=datetime(2026,10,14,15,0,tzinfo=p.TORONTO)
         t=p.serial(now)-.01
@@ -237,3 +257,4 @@ class PersistenceTests(unittest.TestCase):
         self.assertEqual(h.rotation_health(now,receipt,[proposal],held,[]),[])
         self.assertTrue(h.delivery_status(
             datetime(2026,10,23,23,59,tzinfo=p.TORONTO),[],[],[]).startswith("MISSED"))
+
