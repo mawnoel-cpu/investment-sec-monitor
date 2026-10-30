@@ -32,6 +32,69 @@ def review_completion(row):
     return value(row,13) if len(row)>10 else value(row,2)
 
 
+# Reviews O:Z are optional telemetry for new decision runs. Older frozen
+# reviews intentionally retain their legacy schema and audit semantics.
+CHECKPOINT_STAGES = (
+    ("PORTFOLIO", 14, 15),
+    ("EVIDENCE", 16, 17),
+    ("ANALYSIS", 18, 19),
+    ("PERSIST", 20, 21),
+    ("READBACK", 22, 23),
+)
+CHECKPOINT_ALLOWED = {"PASS", "PARTIAL", "FAILED", "BLOCKED"}
+
+
+def has_checkpoints(row):
+    return any(value(row, index) not in ("", None) for index in range(14, 25))
+
+
+def checkpoint_complete(row, now):
+    if not has_checkpoints(row):
+        return True  # Legacy historical rows are not retroactively invalidated.
+    start = value(row, 0)
+    completion = review_completion(row)
+    if not stress.numeric(start) or not stress.numeric(completion):
+        return False
+    previous = start
+    for _, time_col, result_col in CHECKPOINT_STAGES:
+        stamp, result = value(row, time_col), value(row, result_col)
+        if not stress.numeric(stamp) or result != "PASS" or not previous <= stamp <= completion <= prices.serial(now):
+            return False
+        previous = stamp
+    return True
+
+
+def checkpoint_diagnostic(row):
+    """Report the last *persisted* stage; no invented reason for interruption."""
+    if not has_checkpoints(row):
+        return ""
+    last = "NONE"
+    next_stage = ""
+    previous = value(row, 0)
+    issues = []
+    for name, time_col, result_col in CHECKPOINT_STAGES:
+        stamp, status = value(row, time_col), value(row, result_col)
+        if not stress.numeric(stamp) and not status:
+            next_stage = name
+            break
+        if not stress.numeric(stamp):
+            issues.append(name + " timestamp invalid")
+        elif stress.numeric(previous) and stamp < previous:
+            issues.append(name + " timestamp out of order")
+        else:
+            previous = stamp
+        if status not in CHECKPOINT_ALLOWED:
+            issues.append(name + " result missing/invalid")
+        last = name + "=" + (str(status) if status else "UNRECORDED")
+    elapsed = ""
+    if stress.numeric(value(row, 0)) and stress.numeric(previous):
+        elapsed = f"; observed {max(0, round((previous - row[0]) * 86400))}s from start"
+    reason = str(value(row, 24))[:280]
+    return f"checkpoint last {last}; next {next_stage or 'none'}{elapsed}" + (
+        "; " + ",".join(issues) if issues else "") + (
+        "; recorded blocker: " + reason if reason else "")
+
+
 def scheduled_intake(row):
     stamp=value(row,0)
     if not stress.numeric(stamp):
@@ -103,7 +166,7 @@ def evaluate(now, intake, reviews, snapshots, required, verified):
         stamp, asof = value(row, 0, 0), review_completion(row)
         decision = str(value(row, 5))
         dates_ok = stress.numeric(stamp) and stress.numeric(asof) and day <= stamp <= asof <= prices.serial(now)
-        complete = dates_ok and bool(decision) and not re.match(r"(?i)^(started|pending|failed|incomplete|blocked|in progress)", decision) and not missing and not invalid
+        complete = dates_ok and bool(decision) and not re.match(r"(?i)^(started|pending|failed|incomplete|blocked|in progress)", decision) and not missing and not invalid and checkpoint_complete(row, now)
         # A morning-only review cannot pass the afternoon decision check,
         # even when new evidence arrived after the trading cutoff.
         if complete and now.time() >= time(14, 45) and stamp < day + (14 * 60 + 20) / 1440:
@@ -123,11 +186,12 @@ def evaluate(now, intake, reviews, snapshots, required, verified):
         elif complete:
             review_state = "SAVED"
         else:
-            review_state = "INCOMPLETE"
+            review_state = "CHECKPOINT INCOMPLETE" if has_checkpoints(row) else "INCOMPLETE"
     elif len(matches) > 1:
         review_state = "DUPLICATE"
     if not complete and now.time() >= time(14, 45):
-        faults.append(f"{location}: review {review_state}; missing/duplicate snapshots {','.join(missing) or 'none'}; invalid timestamp/action/coverage {','.join(invalid) or 'none'}")
+        diagnostic = checkpoint_diagnostic(matches[0][1]) if len(matches) == 1 else ""
+        faults.append(f"{location}: review {review_state}; missing/duplicate snapshots {','.join(missing) or 'none'}; invalid timestamp/action/coverage {','.join(invalid) or 'none'}" + ("; " + diagnostic if diagnostic else ""))
     return research, review_state, faults
 
 
