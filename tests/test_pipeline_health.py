@@ -36,7 +36,8 @@ class PersistenceTests(unittest.TestCase):
     def test_all_checkpoints_pass_without_retroactive_inference(self):
         f=list(self.fixture());row=list(f[2][0])+[""]*16
         start=row[0]
-        # The existing modern schema uses an explicit completion in column N.
+        # A modern saved review must record the evidence cutoff as well as N.
+        row[11]=start+.00080
         row[13]=start+.00090
         for i,(_,timestamp_col,result_col) in enumerate(h.CHECKPOINT_STAGES,1):
             row[timestamp_col]=start+i*.00010
