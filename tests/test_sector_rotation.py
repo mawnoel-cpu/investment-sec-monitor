@@ -156,6 +156,21 @@ class SectorRotationTests(unittest.TestCase):
         out=s.rank_candidates([row],h,date(2026,10,15),now,positions=[{"ticker":"BHP:LSE","held":.1}])
         self.assertIn("BHP:LSE",out[0]["cash_rank"])
 
+    def test_cash_comparison_excludes_executed_exits_from_weakest_incumbent(self):
+        now=datetime(2026,10,29,22,35,tzinfo=prices.TORONTO)
+        h=fixture(date(2026,10,29))
+        h["PSX"]={d:200-i*3 for i,d in enumerate(sorted(h["SPY"]))}
+        h["NVDA"]=dict(h["SPY"])
+        row=[""]*59;row[0]="NVDA";row[3]="NASDAQ:NVDA";row[18]="YES"
+        portfolio=[{"ticker":"PSX","held":0,"queued":0},
+                   {"ticker":"CME","held":0,"queued":0},
+                   {"ticker":"AMGN","held":.15,"queued":.15}]
+        out=s.rank_candidates([row],h,date(2026,10,29),now,positions=portfolio)
+        self.assertEqual(len(out),1)
+        self.assertIn("weakest actual incumbent AMGN",out[0]["cash_rank"])
+        self.assertNotIn("PSX",out[0]["cash_rank"])
+        self.assertNotIn("CME",out[0]["cash_rank"])
+
     def test_delayed_job_cannot_backdate_on_time_delivery(self):
         now=datetime(2026,10,16,14,55,tzinfo=prices.TORONTO)
         stamp=prices.serial(now)
