@@ -18,6 +18,57 @@ class PersistenceTests(unittest.TestCase):
         research,review,faults=h.evaluate(*self.fixture())
         self.assertEqual((research,review,faults),("SAVED PARTIAL","SAVED",[]))
 
+    def test_telemetry_missing_stage_locates_workload_interruption(self):
+        f=list(self.fixture());row=list(f[2][0])+[""]*16
+        start=row[0]
+        row[14],row[15]=start+.00005,"PASS"
+        row[16],row[17]=start+.00009,"PASS"
+        row[24]="Timed out while opening issuer evidence; provider did not report an error code"
+        f[2]=[row]
+        self.assertFalse(h.checkpoint_complete(row,f[0]))
+        report=h.checkpoint_diagnostic(row)
+        self.assertIn("checkpoint last EVIDENCE=PASS",report)
+        self.assertIn("next ANALYSIS",report)
+        self.assertIn("recorded blocker:",report)
+        self.assertNotIn("execution limit exceeded",report)
+        self.assertIn("checkpoint last EVIDENCE=PASS",h.evaluate(*f)[2][0])
+
+    def test_all_checkpoints_pass_without_retroactive_inference(self):
+        f=list(self.fixture());row=list(f[2][0])+[""]*16
+        start=row[0]
+        # The existing modern schema uses an explicit completion in column N.
+        row[13]=start+.00090
+        for i,(_,timestamp_col,result_col) in enumerate(h.CHECKPOINT_STAGES,1):
+            row[timestamp_col]=start+i*.00010
+            row[result_col]="PASS"
+        f[2]=[row]
+        self.assertTrue(h.checkpoint_complete(row,f[0]))
+        self.assertEqual(h.evaluate(*f)[1],"SAVED")
+        # Final checkpoint AFTER N is not a legitimately verified completion.
+        row[22]=start+.001
+        self.assertFalse(h.checkpoint_complete(row,f[0]))
+        self.assertEqual(h.evaluate(*f)[1],"CHECKPOINT INCOMPLETE")
+
+    def test_bad_checkpoint_status_and_timestamp_cannot_pass(self):
+        f=list(self.fixture());row=list(f[2][0])+[""]*16
+        start=row[0];row[13]=start+.0009
+        for i,(_,time_col,status_col) in enumerate(h.CHECKPOINT_STAGES,1):
+            row[time_col]=start+i*.0001
+            row[status_col]="PASS"
+        row[18]="text instead of numeric time"
+        self.assertFalse(h.checkpoint_complete(row,f[0]))
+        self.assertIn("ANALYSIS timestamp invalid",h.checkpoint_diagnostic(row))
+        row[18]=start+.0003
+        row[19]="UNVERIFIED"
+        self.assertFalse(h.checkpoint_complete(row,f[0]))
+        self.assertIn("ANALYSIS result missing/invalid",h.checkpoint_diagnostic(row))
+
+    def test_legacy_completed_review_remains_accepted(self):
+        f=self.fixture()
+        self.assertFalse(h.has_checkpoints(f[2][0]))
+        self.assertTrue(h.checkpoint_complete(f[2][0],f[0]))
+        self.assertEqual(h.evaluate(*f)[1],"SAVED")
+
     def test_started_is_not_complete(self):
         f=list(self.fixture());f[1][0][7]="Started; analysis/write verification pending"
         self.assertEqual(h.evaluate(*f)[0],"STALLED")
