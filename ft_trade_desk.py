@@ -140,6 +140,89 @@ def sync_views(book, portfolio):
         analysis.get(f"A1:M{analysis.row_count}", value_render_option="UNFORMATTED_VALUE"))})
     book.batch_update({"requests": status_requests(book.worksheet("TODAY").id,
                                                   book.worksheet("BACKEND HEALTH").id)})
+    # Live formulas, not a second decision writer. Reinstall safely on reruns.
+    sync_readiness(book)
+
+
+def sync_readiness(book):
+    """Read back installed formulas; a submitted batch alone is not success."""
+    sheet = book.worksheet("TRADE DESK")
+    requests = readiness_requests(sheet.id)
+    book.batch_update({"requests": requests})
+    expected = []
+    for offset in range(0, len(requests), 2):
+        expected.append([next(iter(requests[offset+c]["updateCells"]["rows"][0]
+                                   ["values"][0]["userEnteredValue"].values()))
+                         for c in range(2)])
+    actual = sheet.get("A25:B60", value_render_option="FORMULA")
+    if actual != expected:
+        raise RuntimeError("TRADE DESK!A25:B60 readiness formula readback mismatch")
+
+
+def readiness_gate(pending, complete, fresh, qualified, action):
+    """Pending wins. Unknown inputs can never default to HOLD."""
+    return (f'IF({pending},"ALREADY QUEUED — DO NOT RESUBMIT",'
+            f'IF(NOT({complete}),"UNRESOLVED — review incomplete",'
+            f'IF(NOT({fresh}),"BLOCKED — stale or unassessed prices",'
+            f'IF(NOT({qualified}),"UNRESOLVED — action/source; see dated addendum",'
+            f'IF({action}="HOLD","HOLD—review completed","READY — "&{action})))))')
+
+
+def readiness_requests(sheet_id):
+    """Live view only: own A25:B60; preserve decisions A1:B23 and all history."""
+    day = 'WORKDAY(TODAY()+1,-1,{DATE(2026,11,26)})'
+    last = 'MATCH("TOTAL",Portfolio!$A:$A,0)-1'
+    names = f'Portfolio!$A$8:INDEX(Portfolio!$A:$A,{last})'
+    weights = f'Portfolio!$C$8:INDEX(Portfolio!$C:$C,{last})'
+    queued = f'Portfolio!$D$8:INDEX(Portfolio!$D:$D,{last})'
+    session = 'WORKDAY(TODAY()+IF(AND(WEEKDAY(TODAY(),2)<6,MOD(NOW(),1)>=TIME(16,0,0)),1,0),-1,{DATE(2026,11,26)})'
+    key = f'"Daily:"&TEXT({day},"yyyy-mm-dd")'
+    def rv(col):
+        return 'IFERROR(XLOOKUP('+key+',Reviews!$J$8:$J$1001,Reviews!$'+col+'$8:$'+col+'$1001,0),0)'
+    common = (f'key,{key},started,{rv("A")},done,{rv("N")},'
+              f'complete,AND(COUNTIF(Reviews!$J$8:$J$1001,key)=1,ISNUMBER(done),done>=started,done<=NOW(),INT(done)={day},'
+              + ','.join(f'{rv(c)}="PASS"' for c in ("P","R","T","V","X")) + ','
+              + ','.join(f'AND(ISNUMBER({rv(c)}),{rv(c)}>=started,{rv(c)}<=done)' for c in ("O","Q","S","U","W")) + '),')
+    values = {
+        25: ("DECISION READINESS", "LIVE CHECKS — supporting view; dated decisions above retain their original times"),
+        26: ("Overall", '=IF(TODAY()>DATE(2026,11,27),"GAME ENDED",IF(COUNTIF(A35:A53,"?*")=0,"BLOCKED — holdings missing",IF(COUNTIF(B35:B53,"*UNRESOLVED*")+COUNTIF(B35:B53,"*BLOCKED*")>0,"PARTIAL — see individual blockers",IF(WEEKDAY(TODAY(),2)>5,"PARTIAL — next-session review due","READY — saved checks; no automatic order"))))'),
+        27: ("Latest saved review", f'=LET({common}IF(complete,"SAVED "&TEXT(done,"dd mmm HH:mm")&" Toronto; "&TODAY!B27,"UNRESOLVED — "&TODAY!B27))'),
+        28: ("Exposure / orders", f'=LET(w,SUM({weights}),q,SUM({queued}),"Confirmed "&TEXT(w,"0%")&" invested / "&TEXT(1-w,"0%")&" cash; queued targets "&TEXT(q,"0%")&"; "&SUMPRODUCT(--(ABS({weights}-{queued})>0.00000001))&" weight changes. Proposed targets: TRADE ANALYSIS; never fills.")'),
+        29: ("Market-price time", f'=TEXT({session},"dd mmm yyyy")&" 16:00 New York close reference; observed tick time unavailable. Held names: US/USD; other venues/currencies need separate checks."'),
+        30: ("Collection / calculation", '="Archive collected "&TEXT(MAX(\'DAILY CLOSES\'!$H$5:$H$12000),"dd mmm HH:mm:ss")&"; inputs calculated "&TEXT(MAX(\'Decision Cards\'!$B$66:$B$104),"dd mmm HH:mm:ss")&" Toronto; per-name freshness below."'),
+        31: ("Alternatives", '="GEV/JPM/NVDA: "&COUNTIF(\'ROTATION BENCH\'!L304:L306,"*NO BUY*")&"/3 RESERVE; checks A303:P309. Candidate gaps do not block completed holding checks."'),
+        32: ("Deadline / recovery", f'=LET(n,{rv("N")},m,{rv("M")},IF(OR(REGEXMATCH(TO_TEXT(m),"on_time_scheduled_proof[^a-z]+false"),AND(ISNUMBER(n),n>{day}+TIME(14,45,0))),"MISSED 14:45 — late recovery is not scheduled proof","See Reviews O:Z; no backdated completion"))'),
+        33: ("Rules", "Detect → Verify → Compare → Qualify → Publish → Reconcile. Flags are research only; thresholds provisional. Confirm execution before updating holdings."),
+        34: ("HELD NAME", "READINESS · confirmed → queued · frozen action"),
+        54: ("PROCESS MEASURES", "Actual results and hypothetical estimates remain separate"),
+        55: ("Current-session checks", '=(COUNTIF(B35:B53,"*HOLD—review completed*")+COUNTIF(B35:B53,"*READY —*"))&"/"&COUNTIF(A35:A53,"?*")&" holding checks qualified; candidate purchase qualification separate."'),
+        56: ("Signal → recommendation delay", "UNKNOWN — no consistent linked first-signal/first-recommendation IDs. Reviews Z measures runtime, not detection delay."),
+        57: ("Account return", '="Last displayed return "&TEXT(PERFORMANCE!B5,"0.00%")&"; "&PERFORMANCE!H5&". Current return/matched benchmark UNKNOWN pending FT snapshot."'),
+        58: ("Drawdown", "UNKNOWN — continuous matched FT equity observations unavailable; never infer from stock momentum."),
+        59: ("Rotation contribution", "Replacement return minus funding holding return from feasible execution date. Actual fills UNKNOWN. Existing proxy batches: PERFORMANCE A105:J115; not realised profit."),
+        60: ("Scope", "READY certifies saved checks, not profit or an order. Refresh after a new session, material news or changed holdings. Historical failures stay recorded."),
+    }
+    for n in range(1,20):
+        row = 34+n
+        ticker = f'IFERROR(INDEX(FILTER({names},{weights}>0),{n}),"")'
+        def dh(col, default='""'):
+            return 'IFERROR(INDEX(FILTER(\'Decision History\'!$'+col+'$5:$'+col+'$1000,\'Decision History\'!$B$5:$B$1000=key,\'Decision History\'!$C$5:$C$1000=t),1),'+default+')'
+        expression = readiness_gate('pending','complete','fresh','qualified','act')
+        formula = (f'=IF(A{row}="","",IFERROR(LET({common}t,A{row},w,XLOOKUP(t,{names},{weights}),q,XLOOKUP(t,{names},{queued}),'
+                   f'ord,IFERROR(XLOOKUP(t,\'Trade Log\'!$C$8:$C$1000,\'Trade Log\'!$F$8:$F$1000,"",0,-1),""),'
+                   f'pending,OR(ABS(w-q)>0.00000001,REGEXMATCH(LOWER(ord),"submitted|pending|queued|scheduled")),'
+                   f'act,{dh("K")},basis,{dh("S")},cnt,COUNTIFS(\'Decision History\'!$B$5:$B$1000,key,\'Decision History\'!$C$5:$C$1000,t),'
+                   f'ps,IFERROR(XLOOKUP(t,\'Decision Cards\'!$A$66:$A$104,\'Decision Cards\'!$C$66:$C$104,0),0),'
+                   f'cap,IFERROR(XLOOKUP(t,\'Decision Cards\'!$A$66:$A$104,\'Decision Cards\'!$B$66:$B$104,0),0),'
+                   f'fresh,AND(RIGHT(t,4)<>":LSE",ps={session},cap>=ps,cap<=NOW(),REGEXMATCH(basis,"VERIFIED PRIOR CLOSE "&TEXT(ps,"yyyy-mm-dd")&"|VERIFIED.*session"&TEXT(ps,"0"))),'
+                   f'qualified,AND(cnt=1,{dh("A","0")}>=started,{dh("A","0")}<=done,{dh("L","0")}>0,{dh("O","0")}>0,{dh("P")}<>"",REGEXMATCH(act,"^(HOLD|TRIM|EXIT|ROTATE)$"),'
+                   f'ABS({dh("D","-1")}-w)<0.00000001,ABS({dh("E","-1")}-q)<0.00000001),'
+                   f'{expression}&" · "&TEXT(w,"0%")&" → "&TEXT(q,"0%")&"; frozen "&IF(act="","missing",act)),'
+                   '"UNRESOLVED — readiness formula/data error"))')
+        values[row] = ('='+ticker,formula)
+    values[26] = (values[26][0], '=IF(OR(COUNTIF(A35:A53,"?*")<>COUNTIF('+weights+',">0"),COUNTIF('+weights+',">0")<5,MAX('+weights+')>0.25000001,MAX('+queued+')>0.25000001,SUM('+weights+')<0.74999999,SUM('+queued+')<0.74999999,SUM('+weights+')>1.00000001,SUM('+queued+')>1.00000001),"BLOCKED — portfolio limits or display coverage",'+values[26][1][1:]+')')
+    values[26] = (values[26][0], '=IFERROR(' + values[26][1][1:] + ',"BLOCKED — readiness calculation error")')
+    return [cell_request(sheet_id,r,c,v) for r,pair in sorted(values.items()) for c,v in enumerate(pair,1)]
 
 
 def status_requests(today_id, health_id):
@@ -179,4 +262,5 @@ IF(OR(NOT(ISNUMBER(done)),done<at,done>NOW()),"UNFINALIZED", "SAVED "&UPPER(st)&
         cell_request(health_id,34,2,f'=IF(REGEXMATCH(TODAY!B28,"^SAVED PARTIAL"),"LIMITED",IF(REGEXMATCH(TODAY!B28,"^SAVED COMPLETE"),"OK",IF(NOW()<{day}+TIME(13,40,0),"PENDING","ISSUE")))'),
         cell_request(health_id,35,2,f'=IF(REGEXMATCH(TODAY!B27,"^SAVED"),"OK",IF(NOW()<{day}+TIME(14,45,0),"PENDING","ISSUE"))'),
         cell_request(health_id,36,2,'=IF(OR(B32="ISSUE",B34="ISSUE",B35="ISSUE",B41="FAILED",REGEXMATCH(B33,"FAILED|NOT AUDITED"),REGEXMATCH(B37,"MISSED")),"ISSUE",IF(B41="PARTIAL","LIMITED","OK"))')]
+
 
