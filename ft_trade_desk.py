@@ -168,17 +168,27 @@ def readiness_gate(pending, complete, fresh, qualified, action):
             f'IF({action}="HOLD","HOLD—review completed","READY — "&{action})))))')
 
 
+def readiness_review_day():
+    """Use an explicitly recorded weekend refresh; never invent a weekday run."""
+    business = 'WORKDAY(TODAY()+1,-1,{DATE(2026,11,26)})'
+    manual = 'COUNTIF(Reviews!$J$8:$J$1001,"Daily:"&TEXT(TODAY(),"yyyy-mm-dd"))>0'
+    saturday = 'COUNTIF(Reviews!$J$8:$J$1001,"Daily:"&TEXT(TODAY()-1,"yyyy-mm-dd"))>0'
+    return f'IF(AND(WEEKDAY(TODAY(),2)>5,{manual}),TODAY(),IF(AND(WEEKDAY(TODAY(),2)=7,{saturday}),TODAY()-1,{business}))'
+
+
 def readiness_requests(sheet_id):
     """Live view only: own A25:B60; preserve decisions A1:B23 and all history."""
-    day = 'WORKDAY(TODAY()+1,-1,{DATE(2026,11,26)})'
+    business_day = 'WORKDAY(TODAY()+1,-1,{DATE(2026,11,26)})'
+    day = readiness_review_day()
     last = 'MATCH("TOTAL",Portfolio!$A:$A,0)-1'
     names = f'Portfolio!$A$8:INDEX(Portfolio!$A:$A,{last})'
     weights = f'Portfolio!$C$8:INDEX(Portfolio!$C:$C,{last})'
     queued = f'Portfolio!$D$8:INDEX(Portfolio!$D:$D,{last})'
     session = 'WORKDAY(TODAY()+IF(AND(WEEKDAY(TODAY(),2)<6,MOD(NOW(),1)>=TIME(16,0,0)),1,0),-1,{DATE(2026,11,26)})'
     key = f'"Daily:"&TEXT({day},"yyyy-mm-dd")'
-    def rv(col):
-        return 'IFERROR(XLOOKUP('+key+',Reviews!$J$8:$J$1001,Reviews!$'+col+'$8:$'+col+'$1001,0),0)'
+    def rv(col, review_key=None):
+        return 'IFERROR(XLOOKUP('+("key" if review_key is None else review_key)+',Reviews!$J$8:$J$1001,Reviews!$'+col+'$8:$'+col+'$1001,0),0)'
+    deadline_key = f'"Daily:"&TEXT({business_day},"yyyy-mm-dd")'
     ordered = "AND(" + ",".join(rv(a)+"<="+rv(b) for a,b in zip(("O","Q","S","U"),("Q","S","U","W"))) + ")"
     common = (f'key,{key},started,{rv("A")},done,{rv("N")},ordered,{ordered},'
               f'complete,AND(ordered,COUNTIF(Reviews!$J$8:$J$1001,key)=1,ISNUMBER(done),done>=started,done<=NOW(),INT(done)={day},'
@@ -187,12 +197,12 @@ def readiness_requests(sheet_id):
     values = {
         25: ("DECISION READINESS", "LIVE CHECKS — supporting view; dated decisions above retain their original times"),
         26: ("Overall", '=IF(TODAY()>DATE(2026,11,27),"GAME ENDED",IF(COUNTIF(A35:A53,"?*")=0,"BLOCKED — holdings missing",IF(COUNTIF(B35:B53,"*UNRESOLVED*")+COUNTIF(B35:B53,"*BLOCKED*")>0,"PARTIAL — see individual blockers",IF(WEEKDAY(TODAY(),2)>5,"PARTIAL — next-session review due","READY — saved checks; no automatic order"))))'),
-        27: ("Latest saved review", f'=LET({common}IF(complete,"SAVED "&TEXT(done,"dd mmm HH:mm")&" Toronto; "&TODAY!B27,"UNRESOLVED — "&TODAY!B27))'),
+        27: ("Latest saved review", f'=LET({common}IF(complete,"SAVED "&TEXT(done,"dd mmm HH:mm")&" Toronto; "&IF({day}<>{business_day},"manual weekend refresh; scheduled handoff remains separate",TODAY!B27),"UNRESOLVED — selected review incomplete"))'),
         28: ("Exposure / orders", f'=LET(w,SUM({weights}),q,SUM({queued}),"Confirmed "&TEXT(w,"0%")&" invested / "&TEXT(1-w,"0%")&" cash; queued targets "&TEXT(q,"0%")&"; "&SUMPRODUCT(--(ABS({weights}-{queued})>0.00000001))&" weight changes. Proposed targets: TRADE ANALYSIS; never fills.")'),
         29: ("Market-price time", f'=TEXT({session},"dd mmm yyyy")&" 16:00 New York close reference; observed tick time unavailable. Held names: US/USD; other venues/currencies need separate checks."'),
         30: ("Collection / calculation", '="Archive collected "&TEXT(MAX(\'DAILY CLOSES\'!$H$5:$H$12000),"dd mmm HH:mm:ss")&"; inputs calculated "&TEXT(MAX(\'Decision Cards\'!$B$66:$B$104),"dd mmm HH:mm:ss")&" Toronto; per-name freshness below."'),
         31: ("Alternatives", '="GEV/JPM/NVDA: "&COUNTIF(\'ROTATION BENCH\'!L304:L306,"*NO BUY*")&"/3 RESERVE; checks A303:P309. Candidate gaps do not block completed holding checks."'),
-        32: ("Deadline / recovery", f'=LET(n,{rv("N")},m,{rv("M")},IF(OR(REGEXMATCH(TO_TEXT(m),"on_time_scheduled_proof[^a-z]+false"),AND(ISNUMBER(n),n>{day}+TIME(14,45,0))),"MISSED 14:45 — late recovery is not scheduled proof","See Reviews O:Z; no backdated completion"))'),
+        32: ("Deadline / recovery", f'=LET(n,{rv("N",deadline_key)},m,{rv("M",deadline_key)},IF(OR(REGEXMATCH(TO_TEXT(m),"on_time_scheduled_proof[^a-z]+false"),AND(ISNUMBER(n),n>{business_day}+TIME(14,45,0))),"MISSED 14:45 — late recovery is not scheduled proof","See Reviews O:Z; no backdated completion"))'),
         33: ("Rules", "Detect → Verify → Compare → Qualify → Publish → Reconcile. Flags are research only; thresholds provisional. Confirm execution before updating holdings."),
         34: ("HELD NAME", "READINESS · confirmed → queued · frozen action"),
         54: ("PROCESS MEASURES", "Actual results and hypothetical estimates remain separate"),

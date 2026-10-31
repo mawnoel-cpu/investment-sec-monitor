@@ -51,3 +51,12 @@ ft_pipeline_health now checks current financing receipts at the actual audit
 clock, matching the existing rotation/input checks. The prior trading-window
 clock remains in use for delivery deadlines. Saturday receipts are not future
 Friday receipts; genuinely future or stale financing receipts still fail.
+
+A requested weekend refresh can have its own real-time Daily review and frozen
+snapshots. The readiness view selects that explicitly recorded weekend review
+(including Saturday's on Sunday if no Sunday review exists); an uncompleted or
+duplicate selected review still fails its normal completion gates. Weekdays
+continue to require that day's review. The deadline/recovery row independently
+uses the last business-day review, so a weekend refresh cannot clear Friday's
+missed deadline or certify Monday's scheduled handoff. Scheduled TODAY/intake
+diagnostics retain their business-day clock.

@@ -97,6 +97,18 @@ class ReadinessTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0].args[0].id, "checked_now")
 
+    def test_manual_weekend_review_does_not_replace_weekday_deadline(self):
+        requests=desk.readiness_requests(1)
+        formulas={r["updateCells"]["start"]["rowIndex"]+1:
+                  r["updateCells"]["rows"][0]["values"][0]["userEnteredValue"].get("formulaValue","")
+                  for r in requests if r["updateCells"]["start"]["columnIndex"]==1}
+        self.assertIn(desk.readiness_review_day(),formulas[27])
+        self.assertIn('manual weekend refresh',formulas[27])
+        self.assertNotIn(desk.readiness_review_day(),formulas[32])
+        self.assertIn('on_time_scheduled_proof',formulas[32])
+        self.assertIn('WEEKDAY(TODAY(),2)>5',desk.readiness_review_day())
+        self.assertIn('COUNTIF(Reviews!',desk.readiness_review_day())
+
 
 if __name__ == "__main__":
     unittest.main()
