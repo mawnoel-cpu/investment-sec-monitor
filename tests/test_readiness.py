@@ -73,6 +73,30 @@ class ReadinessTests(unittest.TestCase):
             self.assertFalse(quoted)
             self.assertEqual(depth, 0)
 
+    def test_weekend_finance_uses_actual_clock_and_rejects_future(self):
+        from datetime import datetime, timedelta
+        import ft_price_writer as prices
+        import ft_financial_stress as finance
+        import ft_pipeline_health as health
+        saturday = datetime(2026,10,31,11,40,tzinfo=prices.TORONTO)
+        receipt = [["FINANCING CALCULATION","VERIFIED"],
+                   ["FINANCING AS OF",prices.serial(saturday-timedelta(minutes=5))]]
+        self.assertEqual(finance.health(saturday, receipt, [], []), [])
+        self.assertTrue(finance.health(health.decision_clock(saturday), receipt, [], []))
+        receipt[1][1] = prices.serial(saturday+timedelta(minutes=1))
+        self.assertTrue(finance.health(saturday, receipt, [], []))
+
+    def test_health_main_passes_actual_clock_to_financing(self):
+        import ast
+        import inspect
+        import ft_pipeline_health as health
+        tree = ast.parse(inspect.getsource(health.main))
+        calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)
+                 and isinstance(node.func, ast.Attribute) and node.func.attr == "health"
+                 and isinstance(node.func.value, ast.Name) and node.func.value.id == "finance"]
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0].args[0].id, "checked_now")
+
 
 if __name__ == "__main__":
     unittest.main()

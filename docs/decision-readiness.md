@@ -45,3 +45,9 @@ Validation: python tests/run_offline.py; node --test tests/test_ft_gmail_queue.c
 TRADE DESK B24 also evaluates four synthetic gate cases in native Sheets:
 completed HOLD, incomplete review, stale price and existing queued order.
 Offline tests/manual readback do not certify a future scheduled run.
+
+The live deployment exposed a separate weekend financing-audit clock mismatch.
+ft_pipeline_health now checks current financing receipts at the actual audit
+clock, matching the existing rotation/input checks. The prior trading-window
+clock remains in use for delivery deadlines. Saturday receipts are not future
+Friday receipts; genuinely future or stale financing receipts still fail.

@@ -520,7 +520,7 @@ def main(now=None):
     # Friday trading-window deliveries remain in the separate audit.
     faults.extend(rotation_health(checked_now, monitor.get("U195:V202", value_render_option="UNFORMATTED_VALUE"),
         monitor.get("A2051:Q2070", value_render_option="UNFORMATTED_VALUE"), portfolio, rotation_runs))
-    faults.extend(finance.health(now, monitor.get("U210:V215", value_render_option="UNFORMATTED_VALUE"),
+    faults.extend(finance.health(checked_now, monitor.get("U210:V215", value_render_option="UNFORMATTED_VALUE"),
         book.worksheet("Decision Cards").get("A41:AF60", value_render_option="UNFORMATTED_VALUE"),
         [(r[0],r[2],r[3]) for r in portfolio if len(r)>3 and isinstance(r[2],(int,float)) and r[2]>0]))
     cards_ws=book.worksheet('Decision Cards')
@@ -658,6 +658,7 @@ def main(now=None):
 
 if __name__ == "__main__":
     main()
+
 
 
 
