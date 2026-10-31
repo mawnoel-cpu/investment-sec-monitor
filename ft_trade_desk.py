@@ -179,8 +179,9 @@ def readiness_requests(sheet_id):
     key = f'"Daily:"&TEXT({day},"yyyy-mm-dd")'
     def rv(col):
         return 'IFERROR(XLOOKUP('+key+',Reviews!$J$8:$J$1001,Reviews!$'+col+'$8:$'+col+'$1001,0),0)'
-    common = (f'key,{key},started,{rv("A")},done,{rv("N")},'
-              f'complete,AND(COUNTIF(Reviews!$J$8:$J$1001,key)=1,ISNUMBER(done),done>=started,done<=NOW(),INT(done)={day},'
+    ordered = "AND(" + ",".join(rv(a)+"<="+rv(b) for a,b in zip(("O","Q","S","U"),("Q","S","U","W"))) + ")"
+    common = (f'key,{key},started,{rv("A")},done,{rv("N")},ordered,{ordered},'
+              f'complete,AND(ordered,COUNTIF(Reviews!$J$8:$J$1001,key)=1,ISNUMBER(done),done>=started,done<=NOW(),INT(done)={day},'
               + ','.join(f'{rv(c)}="PASS"' for c in ("P","R","T","V","X")) + ','
               + ','.join(f'AND(ISNUMBER({rv(c)}),{rv(c)}>=started,{rv(c)}<=done)' for c in ("O","Q","S","U","W")) + '),')
     values = {
@@ -210,7 +211,7 @@ def readiness_requests(sheet_id):
         expression = readiness_gate('pending','complete','fresh','qualified','act')
         formula = (f'=IF(A{row}="","",IFERROR(LET({common}t,A{row},w,XLOOKUP(t,{names},{weights}),q,XLOOKUP(t,{names},{queued}),'
                    f'ord,IFERROR(XLOOKUP(t,\'Trade Log\'!$C$8:$C$1000,\'Trade Log\'!$F$8:$F$1000,"",0,-1),""),'
-                   f'pending,OR(ABS(w-q)>0.00000001,REGEXMATCH(LOWER(ord),"submitted|pending|queued|scheduled")),'
+                   f'pending,OR(ABS(w-q)>0.00000001,AND(REGEXMATCH(LOWER(ord),"submitted|pending|queued|scheduled|partial"),NOT(REGEXMATCH(LOWER(ord),"cancel")))),'
                    f'act,{dh("K")},basis,{dh("S")},cnt,COUNTIFS(\'Decision History\'!$B$5:$B$1000,key,\'Decision History\'!$C$5:$C$1000,t),'
                    f'ps,IFERROR(XLOOKUP(t,\'Decision Cards\'!$A$66:$A$104,\'Decision Cards\'!$C$66:$C$104,0),0),'
                    f'cap,IFERROR(XLOOKUP(t,\'Decision Cards\'!$A$66:$A$104,\'Decision Cards\'!$B$66:$B$104,0),0),'
