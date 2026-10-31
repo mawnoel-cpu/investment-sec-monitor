@@ -1,5 +1,16 @@
 # FT Game Intelligence Apps Script
 
+## Queue sunset — direct-Gmail cutover pending (31 October 2026)
+
+**Current operational decision: do not deploy the newer screening copy of `FT_Gmail_Queue.gs`.** Gmail research discovery, message-body reading, issuer verification, and Evidence persistence are now owned by the existing scheduled **FT Research Intake** task using its connected Gmail account, independently of Apps Script. The existing **FT Daily Trade Decision** task independently checks urgent Gmail messages after the last finalized intake receipt. Both task instructions were amended on 31 October; the source file in this repository is retained for history and rollback, not as a requested deployment.
+
+**Temporary status:** one spreadsheet-bound time-driven `ftGmailQueueCollect` trigger, every 30 minutes, was owner-verified running and continues for now. Its queue is metadata-only; the resulting `FT GMAIL QUEUE` historical PENDING counts are not proof of unscreened priority research and must not gate a daily trade decision. Do not add another trigger or change `Code.gs`, `SecCollector.gs`, `onOpen` or historical evidence.
+
+**Safe retirement gate (do not backdate):** On an actual weekday (first check Monday 2 Nov), both of the following must be independently read back from the existing FT workbook: (1) a genuinely scheduled FT Research Intake receipt with a successful direct connected Gmail search, dated cutoff and >=48h overlap, relevant body reads/dedup/primary-source checks and durable Evidence/FTIntakeRunLog writes; (2) that day's genuinely scheduled Daily Trade Decision Reviews M late_news search/readback and complete 5-stage O:X checkpoints with numeric N handoff by 14:45 Toronto. A manual chat test or offline Node test does **not** satisfy the scheduled gate. The existing read-only **FT Pipeline Health Alert** checks both and should notify the owner once when safe.
+
+**Owner action after BOTH gates PASS:** FT Game Intelligence → Extensions → Apps Script → Triggers → on the single `ftGmailQueueCollect` time-based trigger choose three-dot menu → **Delete trigger**. Keep script files and `onOpen` intact for rollback. There is no authorized connected Apps Script trigger-administration action in the current ChatGPT toolset; an update to repository files does not change the bound deployment. Once disabled, recheck the next scheduled research and decision receipts to confirm no dependency on queue progress. No new collector, task or workbook should be created.
+
+
 This directory is reserved for the container-bound Google Apps Script project attached to the **FT Game Intelligence** spreadsheet.
 
 ## Project
