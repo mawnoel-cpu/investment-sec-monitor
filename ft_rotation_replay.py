@@ -202,12 +202,55 @@ def illustrative_returns(ohlc,entry,end):
     return result
 
 
+def stress_diagnostics(hist, history, start, end):
+    """Fixed perturbations only; no tuning, inferred fills or strategy deployment."""
+    baseline = replay(hist,start,end)
+    def pairs(day,config):
+        return {(a["lag"],a["lead"]) for a in r.detect_warnings(day["metrics"],config)}
+    baseline_pairs = {day["session"]:pairs(day,r.DEFAULTS) for day in baseline["daily"]}
+    sensitivity = []
+    for factor in (.8,1.,1.2):
+        config = dict(r.DEFAULTS,
+            warning_3d_pp=r.DEFAULTS["warning_3d_pp"]*factor,
+            warning_5d_pp=r.DEFAULTS["warning_5d_pp"]*factor)
+        result = baseline if factor==1 else replay(hist,start,end,config)
+        changed,difference,union = 0,0,0
+        for day in result["daily"]:
+            original,actual = baseline_pairs[day["session"]],pairs(day,config)
+            changed += actual != original
+            difference += len(actual ^ original)
+            union += len(actual | original)
+        sensitivity.append(dict(factor=factor,threshold_3d_pp=config["warning_3d_pp"],
+            threshold_5d_pp=config["warning_5d_pp"],episodes=len(result["episodes"]),
+            sessions=len(result["daily"]),changed_sessions=changed,
+            changed_pair_days=difference,union_pair_days=union))
+    models = model_comparison(history,start,end)
+    changes = {name:0 for name in ("company","price","macro")}
+    def action(company,price,score):
+        if price<=-.65 or score<=-.35 and company<=0:return "REVIEW TRIM"
+        if score>=.35 and company>=0:return "REVIEW ADD"
+        return "HOLD"
+    for case in models["cases"]:
+        values = [case["company"],case["price"],case["macro"]]
+        for index,name in enumerate(changes):
+            altered = list(values)
+            altered[index] = 0
+            score = sum(v*w for v,w in zip(altered,(.45,.35,.20)))
+            changes[name] += action(altered[0],altered[1],score) != case["base_band"]
+    return {"threshold_sensitivity":sensitivity,
+            "layer_ablation":{"complete_cases":len(models["cases"]),"changed_bands":changes,
+                             "method":"Zero one layer without renormalising; also remove its direct gate."},
+            "returns":None,"drawdown":None,
+            "limitations":"Correlated warning pairs, not trades. Current-rule arithmetic on incomplete historical records; old schedules/formats may differ. Later-collected historical prices do not prove contemporary availability. No threshold optimisation or investment-edge claim."}
+
+
 def main():
     ap=argparse.ArgumentParser()
     ap.add_argument("--archive",required=True);ap.add_argument("--supplement")
     ap.add_argument("--ohlc");ap.add_argument("--start",default="2026-09-30")
     ap.add_argument("--end",default="2026-10-15");ap.add_argument("--output",required=True)
     ap.add_argument("--financial-evidence");ap.add_argument("--decision-history")
+    ap.add_argument("--stress-diagnostics",action="store_true")
     args=ap.parse_args();rows=read_rows(args.archive)
     if args.supplement:rows+=read_rows(args.supplement)
     hist,_,errors=r.load_archive(rows)
@@ -221,6 +264,10 @@ def main():
         result["financial_stress"]=financial_replay(hist,read_rows(args.financial_evidence),read_rows(args.decision_history),date.fromisoformat(args.start),end)
     if args.decision_history:
         result['model_comparison']=model_comparison(read_rows(args.decision_history),date.fromisoformat(args.start),end)
+    if args.stress_diagnostics:
+        result["stress_diagnostics"]=stress_diagnostics(hist,
+            read_rows(args.decision_history) if args.decision_history else [],
+            date.fromisoformat(args.start),end)
     if args.ohlc:
         result["illustrative_oct12_open_to_end"]=illustrative_returns(json.loads(Path(args.ohlc).read_text()),date(2026,10,12),end)
     Path(args.output).write_text(json.dumps(result,indent=2))
@@ -229,4 +276,5 @@ def main():
 
 
 if __name__=="__main__":main()
+
 

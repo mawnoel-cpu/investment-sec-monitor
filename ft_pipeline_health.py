@@ -56,7 +56,9 @@ def has_checkpoints(row):
 
 def checkpoint_complete(row, now):
     if not has_checkpoints(row):
-        return True  # Legacy historical rows are not retroactively invalidated.
+        # A modern telemetry-shaped row with all stages empty is interrupted,
+        # not a legacy review. Preserve the older A:N schema unchanged.
+        return len(row) <= 14
     start = value(row, 0)
     completion = review_completion(row)
     if not stress.numeric(start) or not stress.numeric(completion):

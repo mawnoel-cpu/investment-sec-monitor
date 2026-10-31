@@ -94,7 +94,8 @@ def load_archive(rows):
             venue, unit, _, _ = prices.venue_info(t, str(val(r, 2)))
             if (not isnum(r[0]) or not isnum(r[3]) or r[3] <= 0 or
                 key != f"{d}|{t}" or val(r, 4) != unit or val(r, 5) != venue or
-                not str(val(r, 6)).startswith("https://") or d.weekday() >= 5):
+                not str(val(r, 6)).startswith("https://") or d.weekday() >= 5 or
+                d in (prices.LSE_HOLIDAYS if venue == "LSE" else prices.US_HOLIDAYS)):
                 raise ValueError("invalid verified row")
             counts[key] += 1
             if counts[key] > 1:
@@ -186,8 +187,19 @@ def detect_warnings(metrics, config=DEFAULTS):
 
 def parse_positions(rows):
     result = []
-    for r in rows:
-        if val(r, 0) and isnum(val(r, 2)) and isnum(val(r, 3)) and (r[2] > 0 or r[3] > 0):
+    seen = set()
+    for n, r in enumerate(rows,8):
+        ticker = val(r,0)
+        if not ticker:
+            if any(val(r,c) not in ("",0) for c in (2,3)):
+                raise ValueError(f"Portfolio!A{n}:D{n}: weights without ticker")
+            continue
+        if ticker in seen:
+            raise ValueError(f"Portfolio!A{n}:D{n}: duplicate ticker {ticker}")
+        seen.add(ticker)
+        if not all(isnum(val(r,c)) and 0<=r[c]<=.25+1e-8 for c in (2,3)):
+            raise ValueError(f"Portfolio!A{n}:D{n}: invalid numeric weight or position cap for {ticker}")
+        if r[2] > 0 or r[3] > 0:
             result.append({"ticker": r[0], "held": float(r[2]), "queued": float(r[3])})
     if not result:
         raise ValueError("Portfolio!A8:D100: no validated holdings")
@@ -199,7 +211,10 @@ def pending_orders(log):
     for r in log:
         if val(r, 2):
             latest[r[2]] = str(val(r, 5))
-    return {t for t, s in latest.items() if re.search(r"(?i)submitted|pending|queued|scheduled", s) and not re.search(r"(?i)^executed|cancel", s)}
+    return {t for t, s in latest.items() if
+            re.search(r"(?i)submitted|pending|queued|scheduled|partial", s)
+            and not re.search(r"(?i)cancel", s)
+            and (not re.search(r"(?i)^executed", s) or re.search(r"(?i)partial", s))}
 
 
 def execution_window(now, venue="US"):
@@ -716,5 +731,6 @@ if __name__ == "__main__":
         # or interrupted run. Never turn it into successful HOLD decisions.
         print(json.dumps({"status": "FAILED", "error": str(exc)[:400]}))
         raise
+
 
 
