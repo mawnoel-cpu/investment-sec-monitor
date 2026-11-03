@@ -147,14 +147,14 @@ def finalized_intake_precedes_review(review_row, latest_intake, verified):
     """
     row_number, receipt = latest_intake
     finished = value(receipt, 8)
+    started = value(receipt, 0)
+    cutoff = value(review_row, 11)
     reviewed_at = value(review_row, 0)
     return (
         str(value(review_row, 10)) == f"Sources!A{row_number}:I{row_number}"
         and value(receipt, 1) in {"Complete", "Partial"}
-        and stress.numeric(finished)
-        and stress.numeric(reviewed_at)
-        and stress.numeric(verified)
-        and finished <= reviewed_at
+        and all(stress.numeric(t) for t in (started, cutoff, finished, reviewed_at, verified))
+        and started <= cutoff <= finished <= reviewed_at
         and verified <= finished + 1 / 86400
     )
 
