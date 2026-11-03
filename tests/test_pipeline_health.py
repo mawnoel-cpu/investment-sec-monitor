@@ -128,6 +128,9 @@ class PersistenceTests(unittest.TestCase):
         row[10] = "Sources!A45:I45"
         self.assertEqual(h.evaluate(*f)[1], "NEW INPUTS")
         row[10] = "Sources!A46:I46"
+        row[11] = f[1][0][0] - 30 / 86400
+        self.assertEqual(h.evaluate(*f)[1], "NEW INPUTS")
+        row[11] = f[5] - 30 / 86400
         f[5] += 2 / 86400
         self.assertEqual(h.evaluate(*f)[1], "NEW INPUTS")
 
