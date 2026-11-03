@@ -12,6 +12,7 @@ import re
 import ft_price_writer as prices
 import ft_financial_stress as finance
 import ft_stress_panel as stress
+from ft_rotation_universe import COMPANY_SECTOR, COMPANY_INDUSTRY
 
 
 def value(row, i, default=""):
@@ -229,11 +230,49 @@ def evaluate(now, intake, reviews, snapshots, required, verified):
     return research, review_state, faults
 
 
-def delivery_status(now, price_logs, intake, reviews, review_ok=None):
+def decision_close_gaps(now, archive_rows, required, tracked):
+    """Missing VERIFIED prior-session closes as of the 14:20 decision cutoff.
+
+    GOOGLEFINANCE supplies live context in PRICE MONITOR, not immutable closes.
+    Only dated archival closes captured no later than the decision cutoff qualify.
+    Check held/review candidates plus their market, sector and industry proxies;
+    a missing unrelated ticker in the wider archive is not a pretrade deadline.
+    """
+    cutoff = datetime.combine(now.date(), time(14, 20), tzinfo=prices.TORONTO)
+    limit = prices.serial(cutoff)
+    essential = set(required) | {"SPY"}
+    for symbol in required:
+        essential.update(t for t in (COMPANY_SECTOR.get(symbol), COMPANY_INDUSTRY.get(symbol)) if t)
+    gaps = []
+    for ticker in sorted(essential):
+        gs = tracked.get(ticker)
+        if not gs:
+            gaps.append(ticker + " unmapped")
+            continue
+        venue, unit, zone, closing = prices.venue_info(ticker, gs)
+        expected = prices.last_completed(cutoff, zone, closing)
+        session = prices.serial(expected)
+        found = any(
+            value(r, 1) == ticker and value(r, 8) == "VERIFIED"
+            and value(r, 9) == f"{expected.isoformat()}|{ticker}"
+            and value(r, 0) == session and value(r, 4) == unit
+            and value(r, 5) == venue and stress.numeric(value(r, 3))
+            and value(r, 3) > 0 and str(value(r, 6)).startswith("https://")
+            and stress.numeric(value(r, 7)) and value(r, 7) <= limit
+            for r in archive_rows
+        )
+        if not found:
+            gaps.append(ticker + " " + expected.isoformat())
+    return gaps
+
+
+def delivery_status(now, price_logs, intake, reviews, review_ok=None, price_missing=None):
     """Persist whether each decision-window write met its own deadline.
 
     A later successful write clears the live fault, but cannot turn a missed
-    research, price, or review deadline into an on-time delivery.
+    research or review deadline into an on-time delivery. From 4 Nov, prices
+    are certified from the prior-session archive by 14:20, not an arbitrary
+    second midday GitHub run. Historical 3 Nov receipts remain unchanged.
     """
     day = int(prices.serial(now))
     today = now.date().isoformat()
@@ -262,23 +301,34 @@ def delivery_status(now, price_logs, intake, reviews, review_ok=None):
         else:
             missed.append("scheduled research Sources!I46:I1000 missing by13:40; early/manual audits are not scheduled delivery")
 
-    price_deadline = day + (14 * 60 + 15) / 1440
-    price_start = day + (12 * 60 + 20) / 1440
-    price_rows = [
-        (n, r) for n, r in enumerate(price_logs, 5)
-        if isinstance(value(r, 0), (int, float)) and int(value(r, 0)) == day
-        and value(r, 2) == "Complete"
-    ]
-    price_on_time = any(price_start <= value(r, 0) <= price_deadline for _, r in price_rows)
-    if now.time() >= time(14, 15) and not price_on_time:
-        eligible_price_rows = [(n, r) for n, r in price_rows
-                               if value(r, 0) >= price_start]
-        if eligible_price_rows:
-            n, row = min(eligible_price_rows, key=lambda x: value(x[1], 0))
-            shown = (prices.EPOCH + timedelta(days=float(value(row, 0)))).strftime("%H:%M")
-            missed.append(f"price DAILY CLOSES!L{n}={shown} >14:15")
-        else:
-            missed.append("price DAILY CLOSES!L5:P200 missing by14:15")
+    if now.date() >= prices.date(2026, 11, 4):
+        # Historical close must exist as of 14:20. A second 12:20–14:15
+        # GitHub receipt is redundant when yesterday's close is already saved.
+        if now.time() >= time(14, 45):
+            if price_missing is None:
+                missed.append("decision prices unverified: no archive cutoff check supplied")
+            elif price_missing:
+                missed.append("decision closes missing by14:20: " +
+                              ", ".join(price_missing[:8]) +
+                              (f" (+{len(price_missing)-8} more)" if len(price_missing)>8 else ""))
+    else:
+        price_deadline = day + (14 * 60 + 15) / 1440
+        price_start = day + (12 * 60 + 20) / 1440
+        price_rows = [
+            (n, r) for n, r in enumerate(price_logs, 5)
+            if isinstance(value(r, 0), (int, float)) and int(value(r, 0)) == day
+            and value(r, 2) == "Complete"
+        ]
+        price_on_time = any(price_start <= value(r, 0) <= price_deadline for _, r in price_rows)
+        if now.time() >= time(14, 15) and not price_on_time:
+            eligible_price_rows = [(n, r) for n, r in price_rows
+                                   if value(r, 0) >= price_start]
+            if eligible_price_rows:
+                n, row = min(eligible_price_rows, key=lambda x: value(x[1], 0))
+                shown = (prices.EPOCH + timedelta(days=float(value(row, 0)))).strftime("%H:%M")
+                missed.append(f"price DAILY CLOSES!L{n}={shown} >14:15")
+            else:
+                missed.append("price DAILY CLOSES!L5:P200 missing by14:15")
 
     key = "Daily:" + today
     review_rows = [(n, r) for n, r in enumerate(reviews, 8) if value(r, 9) == key]
@@ -300,8 +350,8 @@ def delivery_status(now, price_logs, intake, reviews, review_ok=None):
     if missed:
         return f"MISSED {today} — " + "; ".join(missed)
     if now.time() >= time(14, 45):
-        return f"ON TIME {today} — research<=13:40; price<=14:15; review14:20-14:45"
-    return f"DUE BEFORE15:15 {today} — research13:40; price14:15; review14:45"
+        return (f"ON TIME {today} — research<=13:40; prior-session closes at14:20; review14:20-14:45" if now.date() >= prices.date(2026, 11, 4) else f"ON TIME {today} — research<=13:40; price<=14:15; review14:20-14:45")
+    return (f"DUE BEFORE14:45 {today} — research13:40; decision closes14:20; review14:45" if now.date() >= prices.date(2026, 11, 4) else f"DUE BEFORE15:15 {today} — research13:40; price14:15; review14:45")
 
 
 def audit_phase(stamp):
@@ -515,7 +565,9 @@ def main(now=None):
     latest = max((r for r in logs if r), key=lambda r: value(r, 0, 0), default=[])
     if value(latest, 2) != "Complete":
         faults.append(f"DAILY CLOSES!L5:P{archive.row_count}: latest price run not Complete")
-    if now.time() >= time(14, 15) and value(latest, 0, 0) < int(prices.serial(now)) + (12*60+20)/1440:
+    # Superseded from 4 Nov: a timely prior-session archive is sufficient;
+    # 12:20–14:15 GitHub reruns are not a separate data-quality requirement.
+    if now.date() < prices.date(2026, 11, 4) and now.time() >= time(14, 15) and value(latest, 0, 0) < int(prices.serial(now)) + (12*60+20)/1440:
         faults.append(f"DAILY CLOSES!L5:P{archive.row_count}: fresh post12:20 pretrade receipt missing")
     price_state = "FAILED" if faults else "SAVED"
     portfolio = prices.portfolio_rows(book.worksheet("Portfolio"))
@@ -621,7 +673,9 @@ def main(now=None):
             details += "; post-cutoff research queued for next trade-day review"
     else:
         details = "Waiting for unfinished stages; not yet due. This is not an end-to-end completion receipt."
-    delivery = delivery_status(now, logs, intake, reviews,review_ok=review in {"SAVED","NEXT-DAY INPUTS"})
+    price_missing = decision_close_gaps(now, data, required, tracked)
+    delivery = delivery_status(now, logs, intake, reviews,
+        review_ok=review in {"SAVED","NEXT-DAY INPUTS"}, price_missing=price_missing)
     window = health.get("B37", value_render_option="FORMATTED_VALUE")
     persisted_delivery = window[0][0] if window and window[0] else ""
     if persisted_delivery != delivery:
@@ -629,7 +683,7 @@ def main(now=None):
         if health.get("B37", value_render_option="FORMATTED_VALUE") != [[delivery]]:
             raise RuntimeError("BACKEND HEALTH!B37: delivery-state readback mismatch")
     if "MISSED" in delivery:
-        details += " | Prewindow delivery MISSED: BACKEND HEALTH!B37, Sources!I46:I1000, Reviews!A8:J1001, DAILY CLOSES!L5:P200. Current recovery does not backdate the missed window."
+        details += " | Decision-window delivery MISSED: BACKEND HEALTH!B37, Sources!I46:I1000, Reviews!A8:J1001, DAILY CLOSES!A:J. Later recovery does not backdate the missed window."
     if checked_now.date()!=now.date():
         details="Diagnostic of last required trading window "+str(now.date())+"; actual check "+checked_now.isoformat()+". "+details
     record = [prices.serial(checked_now), price_state, research, review, len(tracked), len(required), details[:48000], link, os.getenv("GITHUB_SHA", "local")]
