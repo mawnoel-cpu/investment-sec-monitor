@@ -109,6 +109,28 @@ class PersistenceTests(unittest.TestCase):
         f=list(self.fixture());f[2][0][0]=int(f[5])+.5
         self.assertEqual(h.evaluate(*f)[1],"PREWINDOW REFRESH MISSING")
 
+    def test_same_finalized_intake_receipt_does_not_invalidate_saved_review(self):
+        # The final receipt was read before the afternoon decision, but the
+        # review's source-cutoff field was captured 30 seconds before it finished.
+        f = list(self.fixture())
+        review_start = f[2][0][0]
+        f[1][0][0] = review_start - .02
+        f[1][0][8] = review_start - .01
+        f[5] = f[1][0][8]
+        row = list(f[2][0]) + [""] * 4
+        row[10] = "Sources!A46:I46"
+        row[11] = f[5] - 30 / 86400
+        row[13] = review_start + .001
+        f[2] = [row]
+        self.assertEqual(h.evaluate(*f)[1], "SAVED")
+        # A different receipt, or a genuinely later verification time, must
+        # still invalidate the decision pending an explicit fresh review.
+        row[10] = "Sources!A45:I45"
+        self.assertEqual(h.evaluate(*f)[1], "NEW INPUTS")
+        row[10] = "Sources!A46:I46"
+        f[5] += 2 / 86400
+        self.assertEqual(h.evaluate(*f)[1], "NEW INPUTS")
+
     def test_new_research_requires_review_refresh(self):
         f=list(self.fixture());f[5]+=.005
         self.assertEqual(h.evaluate(*f)[1],"NEW INPUTS")
