@@ -178,7 +178,7 @@ def evaluate(now, intake, reviews, snapshots, required, verified):
         research = "SAVED " + value(row, 1).upper()
     else:
         research = "IN PROGRESS" if now.time() < time(13, 40) else "UNFINALIZED"
-    if research in {"MISSING", "FAILED", "STALLED", "UNFINALIZED"}:
+    if research in {"MISSING", "FAILED", "STALLED", "UNFINALIZED"} and now.date() < prices.date(2026, 11, 4):
         faults.append(f"Sources!A{n}:I{n}: research {research}; expected numeric Completed at in I{n} by13:40 Toronto")
     key = "Daily:" + now.date().isoformat()
     matches = [(n, r) for n, r in enumerate(reviews, 8) if value(r, 9) == key]
@@ -210,7 +210,7 @@ def evaluate(now, intake, reviews, snapshots, required, verified):
         elif complete and isinstance(verified, (int, float)) and (
                 value(row,11,asof) if stress.numeric(value(row,11,asof)) else 0) < verified and not finalized_intake_precedes_review(row, latest, verified):
             cutoff = day + (15 * 60 + 15) / 1440
-            if now.time() >= time(15, 15) and verified >= cutoff:
+            if now.date() >= prices.date(2026, 11, 4) or (now.time() >= time(15, 15) and verified >= cutoff):
                 # Later research must be assessed at the next eligible trade
                 # window. Preserve today's frozen review and the independent
                 # historical prewindow-delivery warning (BACKEND HEALTH!B37).
@@ -292,14 +292,19 @@ def delivery_status(now, price_logs, intake, reviews, review_ok=None, price_miss
     ]
     research_on_time = any(value(r, 8) <= research_deadline
                            for _, r in finalized_research)
+    research_note = ""
     if now.time() >= time(13, 40) and not research_on_time:
         if finalized_research:
             n, row = min(finalized_research, key=lambda x: value(x[1], 8))
             stamp = value(row, 8)
             shown = (prices.EPOCH + timedelta(days=float(stamp))).strftime("%H:%M")
-            missed.append(f"research Sources!I{n}={shown} >13:40")
+            issue = f"research Sources!I{n}={shown} >13:40"
         else:
-            missed.append("scheduled research Sources!I46:I1000 missing by13:40; early/manual audits are not scheduled delivery")
+            issue = "scheduled research Sources!I46:I1000 missing by13:40; early/manual audits are not scheduled delivery"
+        if now.date() >= prices.date(2026, 11, 4):
+            research_note = " | RESEARCH DEGRADED (decision not automatically blocked): " + issue
+        else:
+            missed.append(issue)
 
     if now.date() >= prices.date(2026, 11, 4):
         # Historical close must exist as of 14:20. A second 12:20–14:15
@@ -348,10 +353,14 @@ def delivery_status(now, price_logs, intake, reviews, review_ok=None, price_miss
             missed.append("review Reviews!A8:J1001 missing/duplicate by14:45")
 
     if missed:
-        return f"MISSED {today} — " + "; ".join(missed)
+        return f"MISSED {today} — " + "; ".join(missed) + research_note
     if now.time() >= time(14, 45):
-        return (f"ON TIME {today} — research<=13:40; prior-session closes at14:20; review14:20-14:45" if now.date() >= prices.date(2026, 11, 4) else f"ON TIME {today} — research<=13:40; price<=14:15; review14:20-14:45")
-    return (f"DUE BEFORE14:45 {today} — research13:40; decision closes14:20; review14:45" if now.date() >= prices.date(2026, 11, 4) else f"DUE BEFORE15:15 {today} — research13:40; price14:15; review14:45")
+        return ((f"ON TIME {today} — decision closes14:20; review14:20-14:45" + research_note)
+                if now.date() >= prices.date(2026, 11, 4)
+                else f"ON TIME {today} — research<=13:40; price<=14:15; review14:20-14:45")
+    return ((f"DUE BEFORE14:45 {today} — decision closes14:20; review14:45" + research_note)
+            if now.date() >= prices.date(2026, 11, 4)
+            else f"DUE BEFORE15:15 {today} — research13:40; price14:15; review14:45")
 
 
 def audit_phase(stamp):
@@ -400,6 +409,8 @@ def system_state_text(faults, research, review, delivery):
         return "SYSTEM — ⚠ BACKEND: SEE CELL NOTE"
     if "MISSED" in str(delivery):
         return "SYSTEM — ⚠ BACKEND: PREWINDOW DELIVERY MISSED"
+    if review in {"SAVED", "NEXT-DAY INPUTS"} and not research.startswith("SAVED "):
+        return "SYSTEM — DECISION SAVED; RESEARCH DEGRADED"
     if research.startswith("SAVED ") and review in {"SAVED", "NEXT-DAY INPUTS"}:
         if research.endswith("PARTIAL") or review == "NEXT-DAY INPUTS":
             return "SYSTEM — CHECKED; RESEARCH PARTIAL / NEXT-DAY INPUTS"
@@ -624,12 +635,20 @@ def main(now=None):
     required=required_symbols(portfolio,bench,reviews,now)
     research, review, issues = evaluate(now, intake, reviews, snapshots, required, verified)
     faults.extend(issues)
+    research_advisories = []
+    if now.date() >= prices.date(2026, 11, 4) and research in {"MISSING", "FAILED", "STALLED", "UNFINALIZED"}:
+        research_advisories.append("Research intake " + research +
+            "; use latest saved Evidence with explicit trade-specific risk limitations")
     if now.time()>=time(13,40) and not any(scheduled_intake(r)
             and int(value(r,0))==int(prices.serial(now))
             and value(r,1) in {"Complete","Partial"}
             and stress.numeric(value(r,8)) and value(r,0)<=r[8]<=prices.serial(now)
             for r in intake):
-        faults.append("Sources!A46:I1000: scheduled research receipt missing; early/manual saved audits do not prove the owner ran")
+        issue = "Sources!A46:I1000: scheduled research receipt missing; early/manual saved audits do not prove the owner ran"
+        if now.date() >= prices.date(2026, 11, 4):
+            research_advisories.append(issue)
+        else:
+            faults.append(issue)
     health = book.worksheet("BACKEND HEALTH")
     consistency="FAILED" if view_faults+performance_faults else "PARTIAL" if stress_gaps else "PASS"
     coverage_note="Current holdings, allocation totals, scenario mapping and account-value links agree"
@@ -662,17 +681,22 @@ def main(now=None):
     previous_row, previous = filled[-1] if filled else (None, [])
     dest = previous_row + 1 if previous_row is not None else 44
     link = "https://github.com/mawnoel-cpu/investment-sec-monitor/actions/runs/" + os.getenv("GITHUB_RUN_ID", "local")
-    all_saved = price_state == "SAVED" and research.startswith("SAVED ") and review in {"SAVED", "NEXT-DAY INPUTS"}
+    decision_saved = price_state == "SAVED" and review in {"SAVED", "NEXT-DAY INPUTS"}
+    all_saved = decision_saved and (research.startswith("SAVED ") or now.date() >= prices.date(2026, 11, 4))
     if faults:
         details = " | ".join(faults)
-    elif all_saved:
-        details = "All required writes verified"
-        if research.endswith("PARTIAL"):
+    elif decision_saved:
+        details = "Decision and verified closing-price writes saved"
+        if not research.startswith("SAVED "):
+            details += "; research intake degraded, NOT full research persistence"
+        elif research.endswith("PARTIAL"):
             details += "; broader research remains Partial"
         if review == "NEXT-DAY INPUTS":
-            details += "; post-cutoff research queued for next trade-day review"
+            details += "; subsequent evidence pending the next eligible review"
     else:
         details = "Waiting for unfinished stages; not yet due. This is not an end-to-end completion receipt."
+    if research_advisories:
+        details += " | RESEARCH ADVISORY: " + " | ".join(research_advisories)
     price_missing = decision_close_gaps(now, data, required, tracked)
     delivery = delivery_status(now, logs, intake, reviews,
         review_ok=review in {"SAVED","NEXT-DAY INPUTS"}, price_missing=price_missing)
@@ -725,6 +749,7 @@ def main(now=None):
         # Actions exit requires zero faults; a persistent fault still fails.
         audit_row = previous_row
     status = ("Failed" if faults else "Recovered late" if all_saved and "MISSED" in str(delivery)
+              else "Decision verified; research degraded" if decision_saved and not research.startswith("SAVED ")
               else "Verified" if all_saved else "Waiting")
     print(json.dumps({"status": status, "prices": price_state, "research": research,
         "review": review, "prewindow": delivery, "audit_row": audit_row,
