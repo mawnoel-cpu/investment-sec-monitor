@@ -137,6 +137,28 @@ def required_symbols(portfolio, bench, reviews, now):
     return required
 
 
+def finalized_intake_precedes_review(review_row, latest_intake, verified):
+    """Do not confuse a pre-finalization receipt timestamp with new research.
+
+    When K names the same finalized intake receipt that Sources B39 names,
+    and that receipt finished before the review began, a slightly earlier
+    L evidence-cutoff timestamp is not independent new input. Later receipts,
+    different references and post-review completions still require refresh.
+    """
+    row_number, receipt = latest_intake
+    finished = value(receipt, 8)
+    reviewed_at = value(review_row, 0)
+    return (
+        str(value(review_row, 10)) == f"Sources!A{row_number}:I{row_number}"
+        and value(receipt, 1) in {"Complete", "Partial"}
+        and stress.numeric(finished)
+        and stress.numeric(reviewed_at)
+        and stress.numeric(verified)
+        and finished <= reviewed_at
+        and verified <= finished + 1 / 86400
+    )
+
+
 def evaluate(now, intake, reviews, snapshots, required, verified):
     day = int(prices.serial(now))
     faults = []
@@ -185,7 +207,7 @@ def evaluate(now, intake, reviews, snapshots, required, verified):
             review_state = "PREWINDOW REFRESH MISSING"
             complete = False
         elif complete and isinstance(verified, (int, float)) and (
-                value(row,11,asof) if stress.numeric(value(row,11,asof)) else 0) < verified:
+                value(row,11,asof) if stress.numeric(value(row,11,asof)) else 0) < verified and not finalized_intake_precedes_review(row, latest, verified):
             cutoff = day + (15 * 60 + 15) / 1440
             if now.time() >= time(15, 15) and verified >= cutoff:
                 # Later research must be assessed at the next eligible trade
