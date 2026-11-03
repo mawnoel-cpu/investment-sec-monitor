@@ -231,6 +231,47 @@ class PersistenceTests(unittest.TestCase):
                   "sources","audit","limits","Daily:2026-10-15"]]
         self.assertTrue(h.delivery_status(now,prices,intake,reviews).startswith("ON TIME"))
 
+    def test_google_live_quote_does_not_replace_a_dated_decision_close(self):
+        # A prior-session Yahoo/Stooq archive qualifies even when the GitHub
+        # price job does not run between 12:20 and 14:15 on the decision date.
+        now = datetime(2026, 11, 4, 14, 50, tzinfo=p.TORONTO)
+        session = datetime(2026, 11, 3)
+        captured = p.serial(datetime(2026, 11, 3, 17, 18, tzinfo=p.TORONTO))
+        symbols = {"FANG": "NASDAQ:FANG", "XLE": "NYSEARCA:XLE",
+                   "XOP": "NYSEARCA:XOP", "SPY": "NYSEARCA:SPY"}
+        archive = [[p.serial(session), t, gs, 100., "USD", "US",
+                    "https://query1.finance.yahoo.com/v8/finance/chart/"+t,
+                    captured, "VERIFIED", "2026-11-03|"+t]
+                   for t, gs in symbols.items()]
+        self.assertEqual(h.decision_close_gaps(now, archive, {"FANG"}, symbols), [])
+        # Live Google Finance price alone cannot certify yesterday's close.
+        self.assertIn("FANG 2026-11-03", h.decision_close_gaps(
+            now, archive[1:], {"FANG"}, symbols))
+        # A bar first archived after the decision cutoff also cannot count.
+        archive[0][7] = p.serial(datetime(2026, 11, 4, 14, 35, tzinfo=p.TORONTO))
+        self.assertIn("FANG 2026-11-03", h.decision_close_gaps(
+            now, archive, {"FANG"}, symbols))
+
+    def test_new_pretrade_price_gate_reuses_archived_close_without_midday_run(self):
+        now = datetime(2026, 11, 4, 14, 50, tzinfo=p.TORONTO)
+        day = int(p.serial(now))
+        intake = [[day + 10.75/24, "Complete", 10, 0, 0, 0, 0,
+                   "FINALIZED ScheduledIntake:2026-11-04", day + 10.8/24]]
+        review = [[day + (14*60+21)/1440, "Daily", "", "", "",
+                   "HOLD", "", "", "", "Daily:2026-11-04", "", "",
+                   "", day + (14*60+34)/1440]]
+        # No GitHub pretrade price receipt today; the prior-session
+        # verified archive was checked independently as of 14:20.
+        ok = h.delivery_status(now, [], intake, review, review_ok=True, price_missing=[])
+        self.assertTrue(ok.startswith("ON TIME"), ok)
+        self.assertIn("prior-session closes", ok)
+        missing = h.delivery_status(now, [], intake, review, review_ok=True,
+                                    price_missing=["FANG 2026-11-03"])
+        self.assertIn("MISSED", missing)
+        self.assertIn("FANG 2026-11-03", missing)
+        self.assertIn("unverified", h.delivery_status(now, [], intake, review,
+            review_ok=True).lower())
+
     def test_rotation_rejects_stale_post_execution_weights(self):
         # META user-confirmed sale 12% -> 10%, but engine saved 12% held.
         now = datetime(2026, 10, 19, 14, 30, tzinfo=p.TORONTO)
