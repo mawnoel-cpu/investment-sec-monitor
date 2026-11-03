@@ -231,6 +231,43 @@ class PersistenceTests(unittest.TestCase):
                   "sources","audit","limits","Daily:2026-10-15"]]
         self.assertTrue(h.delivery_status(now,prices,intake,reviews).startswith("ON TIME"))
 
+    def test_missing_intake_is_advisory_when_verifiable_daily_review_is_saved(self):
+        now = datetime(2026, 11, 4, 14, 50, tzinfo=p.TORONTO)
+        stamp = p.serial(datetime(2026, 11, 4, 14, 30, tzinfo=p.TORONTO))
+        review = [[stamp, "Daily", stamp, "portfolio", "risk",
+                   "HOLD ALAB; evaluated best available evidence", "sources",
+                   "audit", "intake delayed", "Daily:2026-11-04"]]
+        snapshots = [[stamp, "Daily:2026-11-04", "ALAB"] + [""] * 7 +
+                     ["HOLD"] + [""] * 7 + ["Verified completed session"]]
+        snapshots[0][11:16] = [100, "USD", "SPY", 100, "PRIMARY:issuer"]
+        research, saved, faults = h.evaluate(now, [], review, snapshots, {"ALAB"}, stamp)
+        self.assertEqual((research, saved, faults), ("MISSING", "SAVED", []))
+        status = h.delivery_status(now, [], [], review, review_ok=True, price_missing=[])
+        self.assertTrue(status.startswith("ON TIME"), status)
+        self.assertIn("RESEARCH DEGRADED", status)
+        self.assertEqual(h.system_state_text([], research, saved, status),
+                         "SYSTEM — DECISION SAVED; RESEARCH DEGRADED")
+
+        # Still reject absent decision persistence and incomplete coverage.
+        research, saved, faults = h.evaluate(now, [], review, [], {"ALAB"}, stamp)
+        self.assertNotEqual(saved, "SAVED")
+        self.assertTrue(any("missing/duplicate snapshots" in x for x in faults))
+        self.assertIn("MISSED", h.delivery_status(
+            now, [], [], [], review_ok=False, price_missing=[]))
+
+    def test_new_evidence_after_saved_review_is_next_review_input_not_automatic_failure(self):
+        now = datetime(2026, 11, 4, 14, 50, tzinfo=p.TORONTO)
+        stamp = p.serial(datetime(2026, 11, 4, 14, 30, tzinfo=p.TORONTO))
+        later = p.serial(datetime(2026, 11, 4, 14, 39, tzinfo=p.TORONTO))
+        review = [[stamp, "Daily", stamp, "portfolio", "risk",
+                   "HOLD ALAB; next-session evidence update scheduled", "sources",
+                   "audit", "new inputs", "Daily:2026-11-04"]]
+        snapshots = [[stamp, "Daily:2026-11-04", "ALAB"] + [""] * 7 +
+                     ["HOLD"] + [""] * 7 + ["Verified completed session"]]
+        snapshots[0][11:16] = [100, "USD", "SPY", 100, "PRIMARY:issuer"]
+        research, status, faults = h.evaluate(now, [], review, snapshots, {"ALAB"}, later)
+        self.assertEqual((status, faults), ("NEXT-DAY INPUTS", []))
+
     def test_google_live_quote_does_not_replace_a_dated_decision_close(self):
         # A prior-session Yahoo/Stooq archive qualifies even when the GitHub
         # price job does not run between 12:20 and 14:15 on the decision date.
