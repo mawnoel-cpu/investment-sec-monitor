@@ -355,7 +355,7 @@ def delivery_status(now, price_logs, intake, reviews, review_ok=None, price_miss
     if missed:
         return f"MISSED {today} — " + "; ".join(missed) + research_note
     if now.time() >= time(14, 45):
-        return ((f"ON TIME {today} — decision closes14:20; review14:20-14:45" + research_note)
+        return ((f"ON TIME {today} — prior-session closes at14:20; review14:20-14:45" + research_note)
                 if now.date() >= prices.date(2026, 11, 4)
                 else f"ON TIME {today} — research<=13:40; price<=14:15; review14:20-14:45")
     return ((f"DUE BEFORE14:45 {today} — decision closes14:20; review14:45" + research_note)
