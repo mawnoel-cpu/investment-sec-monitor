@@ -560,10 +560,11 @@ def main(now=None):
     checked_now=now
     now=decision_clock(now)
     book = prices.auth_book()
-    tracked = prices.tracking(book)
+    mapping_faults = []
+    tracked = prices.tracking(book, mapping_faults=mapping_faults)
     archive = book.worksheet("DAILY CLOSES")
     data = archive.get(f"A5:J{archive.row_count}", value_render_option="UNFORMATTED_VALUE")
-    faults = []
+    faults = list(mapping_faults)
     for ticker, gs in tracked.items():
         rows = [(n, r) for n, r in enumerate(data, 5) if value(r, 1) == ticker and value(r, 8) == "VERIFIED"]
         expected = prices.last_completed(now, *prices.venue_info(ticker, gs)[2:])
@@ -761,6 +762,7 @@ def main(now=None):
 
 if __name__ == "__main__":
     main()
+
 
 
 

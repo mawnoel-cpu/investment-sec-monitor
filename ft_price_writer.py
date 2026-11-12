@@ -37,6 +37,16 @@ DATA_LAST_ROW = 12000
 US_HOLIDAYS = {date(2026, 9, 7), date(2026, 11, 26)}
 LSE_HOLIDAYS = {date(2026, 8, 31)}
 
+# Reviewed issuer filings, not ratios inferred from a large price move.
+# Archive corrections are applied only after the ex-date, with independent
+# downloaded bars confirming the ratio and the original row retained in a note.
+CONFIRMED_SPLITS = {
+    "SOXX": (date(2026, 11, 5), 3,
+             "https://www.sec.gov/Archives/edgar/data/1100663/000119312526430480/d156277d497.htm"),
+    "ITA": (date(2026, 11, 5), 3,
+            "https://www.sec.gov/Archives/edgar/data/1100663/000119312526414100/d54975d497.htm"),
+}
+
 
 def portfolio_rows(ws):
     """Read the live holdings block up to TOTAL; never a fixed former row count."""
@@ -286,7 +296,7 @@ def auth_book():
     return book
 
 
-def tracking(book):
+def tracking(book, *, mapping_faults=None):
     gates=book.worksheet("PRICE GATES").get("A5:D23",value_render_option="FORMATTED_VALUE")
     tracked={}
     for r in gates:
@@ -327,7 +337,12 @@ def tracking(book):
         if len(r) >= 4 and any(isinstance(v, (float, int)) and v > 0 for v in r[2:4]):
             ticker = str(r[0]).strip()
             if ticker not in tracked:
-                raise RuntimeError(f"Portfolio!A8:D100: held/queued {ticker} has no verified symbol mapping")
+                issue = f"Portfolio!A8:D100: held/queued {ticker} has no verified symbol mapping"
+                if mapping_faults is None:
+                    raise RuntimeError(issue)
+                # A new unmapped holding must remain an explicit coverage fault,
+                # while independently mapped symbols can still be refreshed.
+                mapping_faults.append(issue)
     if not tracked:
         raise RuntimeError("PRICE GATES/CANDIDATE POOL/PRICE MONITOR: empty universe")
     return tracked
@@ -374,6 +389,88 @@ def get_google_fallback(book,ticker,now,gs):
     Yahoo daily bars and Stooq history provide the independently dated fallback.
     """
     return [], "Google Finance live quote is not a certified daily close"
+
+
+def split_plan(values, ticker, bars, now):
+    """Normalize a confirmed split, preserving an auditable original row.
+
+    Only pre-split observations captured before the ex-date are eligible.
+    At least five overlapping downloaded closes must confirm the exact ratio;
+    every available overlap must agree. Unknown actions or unexplained source
+    differences remain faults. The source marker prevents a second adjustment.
+    """
+    event = CONFIRMED_SPLITS.get(ticker)
+    if event is None or now.astimezone(TORONTO).date() < event[0]:
+        return []
+    ex_date, ratio, evidence = event
+    marker = f"ft-split-adjusted={ex_date.isoformat()}-{ratio}to1"
+    candidates = []
+    anchors = 0
+    seen = set()
+    for n, row in enumerate(values, 5):
+        if len(row) < 10 or row[1] != ticker:
+            continue
+        day = day_of(row[0])
+        if day >= ex_date or marker in str(row[6]):
+            continue
+        if (not isinstance(row[7], (int, float)) or isinstance(row[7], bool)
+                or not math.isfinite(row[7]) or row[7] >= serial(ex_date)):
+            # A later import may already be adjusted. Never divide it by guess.
+            continue
+        if (row[8] != "VERIFIED" or row[4:6] != ["USD", "US"]
+                or row[9] != f"{day.isoformat()}|{ticker}" or row[9] in seen
+                or not isinstance(row[3], (int, float)) or isinstance(row[3], bool)
+                or not math.isfinite(row[3]) or row[3] <= 0
+                or not isinstance(row[6], str) or not row[6].startswith("https://")):
+            raise RuntimeError(f"DAILY CLOSES!A{n}:J{n}: split archive validation failed")
+        seen.add(row[9])
+        adjusted = round(row[3] / ratio, 5)
+        if day in bars:
+            if not math.isclose(adjusted, bars[day][0], rel_tol=0.0001, abs_tol=0.00002):
+                raise RuntimeError(f"{ticker}: confirmed split does not explain source mismatch on {day}")
+            anchors += 1
+        after = list(row)
+        after[3] = adjusted
+        after[6] += ("&" if "#" in after[6] else "#") + marker
+        after[7] = serial(now)
+        note = json.dumps({"action": "verified split adjustment", "ex_date": str(ex_date),
+                           "new_shares_per_old": ratio, "issuer_filing": evidence,
+                           "adjusted_at": now.isoformat(), "original_row": row})
+        candidates.append((n, after, note))
+    if candidates and anchors < 5:
+        raise RuntimeError(f"{ticker}: split adjustment needs five matching downloaded pre-split closes; found {anchors}")
+    return candidates
+
+
+def reconcile_confirmed_split(ws, ticker, bars, now):
+    if ticker not in CONFIRMED_SPLITS or now.astimezone(TORONTO).date() < CONFIRMED_SPLITS[ticker][0]:
+        return {}
+    values = ws.get(f"A5:J{ws.row_count}", value_render_option="UNFORMATTED_VALUE")
+    plan = split_plan(values, ticker, bars, now)
+    if not plan:
+        return {}
+    # Price, provenance marker and capture timestamp change atomically in each
+    # batch. A partial interruption can safely resume without dividing twice.
+    for pos in range(0, len(plan), 100):
+        requests = []
+        for n, row, note in plan[pos:pos+100]:
+            requests.extend([
+                {"updateCells": {"range": {"sheetId": ws.id, "startRowIndex": n-1,
+                    "endRowIndex": n, "startColumnIndex": 3, "endColumnIndex": 4},
+                    "rows": [{"values": [{"userEnteredValue": {"numberValue": row[3]}, "note": note}]}],
+                    "fields": "userEnteredValue,note"}},
+                {"updateCells": {"range": {"sheetId": ws.id, "startRowIndex": n-1,
+                    "endRowIndex": n, "startColumnIndex": 6, "endColumnIndex": 8},
+                    "rows": [{"values": [{"userEnteredValue": {"stringValue": row[6]}},
+                                           {"userEnteredValue": {"numberValue": row[7]}}]}],
+                    "fields": "userEnteredValue"}},
+            ])
+        ws.spreadsheet.batch_update({"requests": requests})
+    actual = ws.get(f"A5:J{ws.row_count}", value_render_option="UNFORMATTED_VALUE")
+    for n, row, _ in plan:
+        if n-5 >= len(actual) or not rows_match([actual[n-5]], [row]):
+            raise RuntimeError(f"DAILY CLOSES!A{n}:J{n}: split adjustment readback mismatch")
+    return {row[9]: row[3] for _, row, _ in plan}
 
 
 def rows_match(actual, expected):
@@ -446,19 +543,24 @@ def main(mode="close",now=None):
     ws=book.worksheet(SOURCE_SHEET)
     if ws.get("A4:J4")[0]!=DATA_COLUMNS:
         raise RuntimeError("DAILY CLOSES schema changed; refusing unsafe write")
-    tracked=tracking(book)
+    mapping_faults=[]
+    tracked=tracking(book, mapping_faults=mapping_faults)
+    expected_total=len(tracked)+len(mapping_faults)
     if ws.row_count < DATA_LAST_ROW:
         ws.resize(rows=DATA_LAST_ROW)
     ws.update(range_name="L4:P4", values=[LOG_COLUMNS], value_input_option="RAW")
-    logrow = save_log(ws, now, mode, "Partial", len(tracked), ["Started; price data/write verification pending"])
+    logrow = save_log(ws, now, mode, "Partial", expected_total, mapping_faults+["Started; price data/write verification pending"])
     keys,original,last,archived_verified=existing_keys(ws)
-    rows=[]; faults={}; bad=[]; success=0; reused=0
+    rows=[]; faults={}; bad=list(mapping_faults); success=0; reused=0; adjusted=0
     with ThreadPoolExecutor(max_workers=4) as pool:
         futures={pool.submit(fetch_ticker,t,gs,now):t for t,gs in tracked.items()}
         for fut in as_completed(futures):
             t=futures[fut]
             try:
                 ticker,gs,venue,unit,bars,expected,err=fut.result()
+                corrections=reconcile_confirmed_split(ws,ticker,bars,now)
+                original.update(corrections)
+                adjusted+=len(corrections)
                 if not bars:
                     fallback,extra=get_google_fallback(book,ticker,now,gs)
                     bars={dt:(p,url) for dt,p,url in fallback}
@@ -508,22 +610,23 @@ def main(mode="close",now=None):
         append_rows(ws,last+1,rows)
         # Native date and capture-time formatting for appended numeric serials.
         ws.spreadsheet.batch_update({"requests":[{"repeatCell":{"range":{"sheetId":ws.id,"startRowIndex":last,"endRowIndex":last+len(rows),"startColumnIndex":col,"endColumnIndex":col+1},"cell":{"userEnteredFormat":{"numberFormat":{"type":fmt,"pattern":pat}}},"fields":"userEnteredFormat.numberFormat"}} for col,fmt,pat in ((0,"DATE","dd mmm yyyy"),(7,"DATE_TIME","dd mmm yyyy HH:mm"))]})
-    state="Complete" if success==len(tracked) and not bad else "Partial" if success else "Failed"
-    receipt = f"run={os.getenv('GITHUB_RUN_ID', 'local')}; sha={os.getenv('GITHUB_SHA', 'local')}; rows={len(rows)}; archived_same_session_reused={reused}; price readback verified"
+    state="Complete" if success==expected_total and not bad else "Partial" if success else "Failed"
+    receipt = f"run={os.getenv('GITHUB_RUN_ID', 'local')}; sha={os.getenv('GITHUB_SHA', 'local')}; rows={len(rows)}; archived_same_session_reused={reused}; split_adjusted_rows={adjusted}; price readback verified"
     # The final Complete/Partial/Failed receipt must carry completion time.
     # A Started timestamp or scheduled time is not proof that the write ended.
     completed_at = completion_receipt_time(now, supplied_now)
-    save_log(ws,completed_at,mode,state,len(tracked),bad + [receipt], row_number=logrow)
+    save_log(ws,completed_at,mode,state,expected_total,bad + [receipt], row_number=logrow)
     mark_fault_notes(book,faults)
     # Explicit readback before reporting a successful write.
     log=ws.get(f"L5:P{max(200, logrow)}",value_render_option="UNFORMATTED_VALUE")
     latest=[r for r in log if r and r[0] not in ("",None)][-1]
     if str(latest[2])!=state or str(latest[1])!=mode:
         raise RuntimeError("price run-log write/readback mismatch")
-    print(json.dumps({"status":state,"tickers":len(tracked),"covered":success,"rows_added":len(rows),"verified_archive_reused":reused,"failures":bad[:25]}))
+    print(json.dumps({"status":state,"tickers":expected_total,"covered":success,"rows_added":len(rows),"split_adjusted_rows":adjusted,"verified_archive_reused":reused,"failures":bad[:25]}))
     if state!="Complete":
         raise RuntimeError("Incomplete verified price coverage; see DAILY CLOSES!L:P")
 
 
 if __name__=="__main__":
     main(sys.argv[1] if len(sys.argv)>1 else "close")
+

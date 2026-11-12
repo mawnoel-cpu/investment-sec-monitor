@@ -1,6 +1,8 @@
 """Offline regression tests for daily FT close writer. No network, no credentials."""
 import unittest
-from datetime import datetime, date
+import copy
+import json
+from datetime import datetime, date, timedelta
 from unittest.mock import Mock, patch
 from zoneinfo import ZoneInfo
 
@@ -8,6 +10,111 @@ import ft_price_writer as p
 
 
 class DailyPriceTests(unittest.TestCase):
+    def test_queued_zlab_mapping_and_unknown_symbol_remain_explicit(self):
+        book=Mock()
+        sheets={n:Mock() for n in ["PRICE GATES","PRICE MONITOR","Portfolio","CANDIDATE POOL"]}
+        book.worksheet.side_effect=lambda n:sheets[n]
+        for sheet in sheets.values():
+            sheet.get.return_value=[]
+        sheets["CANDIDATE POOL"].row_count=150
+        sheets["Portfolio"].get.return_value=[
+            ["ZLAB","Zai Lab ADS",0,.10],["UNKNOWN","Unmapped",.05,.05],["TOTAL","",.05,.15]]
+        faults=[]
+        mapped=p.tracking(book,mapping_faults=faults)
+        self.assertEqual(mapped["ZLAB"],"NASDAQ:ZLAB")
+        self.assertNotIn("UNKNOWN",mapped)
+        self.assertEqual(len(faults),1)
+        self.assertIn("held/queued UNKNOWN",faults[0])
+        with self.assertRaisesRegex(RuntimeError,"UNKNOWN"):
+            p.tracking(book)
+
+    def test_unmapped_symbol_keeps_other_prices_but_never_certifies_complete(self):
+        now=datetime(2026,11,12,8,tzinfo=p.TORONTO)
+        end=date(2026,11,11)
+        book=Mock();ws=Mock();ws.row_count=12000;ws.id=1
+        book.worksheet.return_value=ws
+        logs=[]
+        def get(rng,**kw):
+            return [p.DATA_COLUMNS] if rng=="A4:J4" else logs
+        ws.get.side_effect=get
+        def tracking(book,*,mapping_faults):
+            mapping_faults.append("Portfolio!A8:D100: held/queued UNKNOWN has no verified symbol mapping")
+            return {"AAA":"NYSE:AAA"}
+        def save(ws,when,mode,state,total,failures,row_number=None):
+            logs[:]=[[p.serial(when),mode,state,total," | ".join(failures)]]
+            return 5
+        fetched=("AAA","NYSE:AAA","US","USD",{end:(100,"https://prices.example")},end,"")
+        with (patch.object(p,"auth_book",return_value=book),
+              patch.object(p,"tracking",side_effect=tracking),
+              patch.object(p,"save_log",side_effect=save),
+              patch.object(p,"existing_keys",return_value=(set(),{},4,set())),
+              patch.object(p,"fetch_ticker",return_value=fetched),
+              patch.object(p,"append_rows") as append,
+              patch.object(p,"mark_fault_notes")):
+            with self.assertRaisesRegex(RuntimeError,"Incomplete verified price coverage"):
+                p.main("pretrade",now)
+        self.assertEqual(append.call_args.args[2][0][1],"AAA")
+        self.assertEqual(logs[0][2:4],["Partial",2])
+        self.assertIn("UNKNOWN",logs[0][4])
+
+    def split_fixture(self,ticker="SOXX"):
+        now=datetime(2026,11,12,8,tzinfo=p.TORONTO)
+        capture=p.serial(datetime(2026,11,4,20,tzinfo=p.TORONTO))
+        dates=[date(2026,10,26)+timedelta(days=n) for n in range(5)]
+        rows=[[p.serial(day),ticker,"NASDAQ:"+ticker,300+3*n,"USD","US",
+               "https://prices.example/history",capture,"VERIFIED",f"{day}|{ticker}"]
+              for n,day in enumerate(dates)]
+        bars={day:(100+n,"https://prices.example/history") for n,day in enumerate(dates)}
+        return now,rows,bars
+
+    def test_confirmed_splits_are_auditable_idempotent_and_remove_false_loss(self):
+        for ticker in ("SOXX","ITA"):
+            now,rows,bars=self.split_fixture(ticker)
+            original=copy.deepcopy(rows)
+            plan=p.split_plan(rows,ticker,bars,now)
+            self.assertEqual(len(plan),5)
+            self.assertEqual(plan[0][1][3],100)
+            self.assertEqual(json.loads(plan[0][2])["original_row"],rows[0])
+            self.assertEqual(json.loads(plan[0][2])["issuer_filing"],p.CONFIRMED_SPLITS[ticker][2])
+            adjusted=[row for _,row,_ in plan]
+            self.assertEqual(p.split_plan(adjusted,ticker,bars,now),[])
+            self.assertEqual(rows,original)
+            self.assertAlmostEqual(104/adjusted[-1][3]-1,0)
+            self.assertLess(104/rows[-1][3]-1,-.6)
+
+    def test_split_needs_confirmed_event_and_agreeing_history(self):
+        now,rows,bars=self.split_fixture()
+        self.assertEqual(p.split_plan(rows,"UNKNOWN",bars,now),[])
+        self.assertEqual(p.split_plan(rows,"SOXX",bars,now.replace(day=4)),[])
+        with self.assertRaisesRegex(RuntimeError,"five matching"):
+            p.split_plan(rows,"SOXX",dict(list(bars.items())[:4]),now)
+        bars[date(2026,10,26)]=(130,"https://prices.example/history")
+        with self.assertRaisesRegex(RuntimeError,"does not explain"):
+            p.split_plan(rows,"SOXX",bars,now)
+
+    def test_split_never_divides_postsplit_or_later_imports_by_guess(self):
+        now,rows,bars=self.split_fixture()
+        later=copy.deepcopy(rows[0]);later[7]=p.serial(now)
+        post=copy.deepcopy(rows[0]);post[0]=p.serial(date(2026,11,5));post[9]="2026-11-05|SOXX"
+        post[3]=100
+        plan=p.split_plan(rows+[later,post],"SOXX",bars,now)
+        self.assertEqual(len(plan),5)
+        self.assertTrue(all(n<=9 for n,_,_ in plan))
+
+    def test_split_write_must_read_back_and_changes_only_price_provenance(self):
+        now,rows,bars=self.split_fixture()
+        plan=p.split_plan(rows,"SOXX",bars,now)
+        ws=Mock();ws.id=7;ws.row_count=100
+        ws.get.side_effect=[rows,[row for _,row,_ in plan]]
+        changed=p.reconcile_confirmed_split(ws,"SOXX",bars,now)
+        self.assertEqual(len(changed),5)
+        requests=ws.spreadsheet.batch_update.call_args.args[0]["requests"]
+        self.assertEqual({r["updateCells"]["range"]["startColumnIndex"] for r in requests},{3,6})
+        self.assertTrue(all(r["updateCells"]["range"]["sheetId"]==7 for r in requests))
+        ws.get.side_effect=[rows,rows]
+        with self.assertRaisesRegex(RuntimeError,"readback mismatch"):
+            p.reconcile_confirmed_split(ws,"SOXX",bars,now)
+
     def test_final_receipt_uses_completion_not_started_time(self):
         started=datetime(2026,10,15,13,50,tzinfo=p.TORONTO)
         completed=datetime(2026,10,15,13,54,tzinfo=p.TORONTO)
@@ -197,3 +304,4 @@ class DailyPriceTests(unittest.TestCase):
 
 if __name__=="__main__":
     unittest.main()
+

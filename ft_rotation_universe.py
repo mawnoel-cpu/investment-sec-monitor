@@ -53,5 +53,8 @@ def extra_symbols():
             result[t] = ("NASDAQ:" if t in NASDAQ else "NYSE:") + ("BRK.B" if t == "BRK-B" else t)
     # Actual FT holdings beyond the fixed three-company sector-breadth samples.
     # Include quote mappings without changing the point-in-time breadth denominator.
-    result.update({"CB": "NYSE:CB", "CME": "NASDAQ:CME"})
+    # Zai Lab's US ADS is ZLAB on Nasdaq, not its Hong Kong ordinary share.
+    # Verified: https://ir.zailaboratory.com/investor-resources/investor-faq
+    result.update({"CB": "NYSE:CB", "CME": "NASDAQ:CME", "ZLAB": "NASDAQ:ZLAB"})
     return result
+
