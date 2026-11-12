@@ -101,6 +101,16 @@ class DailyPriceTests(unittest.TestCase):
         self.assertEqual(len(plan),5)
         self.assertTrue(all(n<=9 for n,_,_ in plan))
 
+    def test_split_preserves_small_fallback_vendor_difference_but_rejects_material_gap(self):
+        now,rows,bars=self.split_fixture()
+        rows[-1][3]=312.45  # 0.144% cross-provider difference after the 3:1 split.
+        plan=p.split_plan(rows,"SOXX",bars,now)
+        self.assertEqual(plan[-1][1][3],104.15)
+        self.assertEqual(json.loads(plan[-1][2])["original_row"][3],312.45)
+        rows[-1][3]=315  # 0.96% exceeds the split-specific 0.25% allowance.
+        with self.assertRaisesRegex(RuntimeError,"normalized archive"):
+            p.split_plan(rows,"SOXX",bars,now)
+
     def test_split_write_must_read_back_and_changes_only_price_provenance(self):
         now,rows,bars=self.split_fixture()
         plan=p.split_plan(rows,"SOXX",bars,now)
